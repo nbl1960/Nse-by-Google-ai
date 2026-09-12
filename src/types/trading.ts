@@ -1,141 +1,123 @@
 export type AssetSymbol = 
-  | 'NIFTY 50'
-  | 'BANKNIFTY'
-  | 'SENSEX'
-  | 'RELIANCE'
-  | 'HDFCBANK'
-  | 'TCS'
-  | 'INFY'
-  | 'ICICIBANK'
-  | 'TATAMOTORS'
-  | 'MARUTI';
+  | 'BTC/USD'
+  | 'XAU/USD'
+  | 'DXY'
+  | 'ETH/USD'
+  | 'US10Y'
+  | 'XAG/USD';
 
-export type Timeframe = '1m' | '3m' | '5m' | '15m' | '1h' | '1D';
+export type PrimaryTradeSymbol = 'BTC/USD' | 'XAU/USD';
 
-export type ProductType = 'MIS' | 'CNC' | 'NRML';
+export type Timeframe = '1m' | '3m' | '5m' | '15m' | '1h' | '4h' | '1D';
+
+export type ProductType = 
+  | 'PERPETUAL' 
+  | 'SPOT' 
+  | 'MARGIN' 
+  | 'PERPETUAL_SWAP' 
+  | 'ISOLATED_MARGIN' 
+  | 'PHYSICAL_SPOT';
 
 export interface InstrumentMeta {
   symbol: AssetSymbol;
   name: string;
-  exchange: 'NSE_INDEX' | 'NSE_EQ' | 'BSE_INDEX';
-  lotSize: number;
-  tickSize: number;
-  strikeStep: number;
-  upstoxKey: string;
-  isIndex: boolean;
+  category: 'CRYPTO' | 'PRECIOUS_METALS' | 'MACRO_CURRENCY' | 'MACRO_YIELD';
   basePrice: number;
+  tickSize: number;
+  contractSize: number; // e.g. 1 BTC or 100 oz Gold
+  lotStep: number;
+  minOrderSize: number;
+  maxLeverage: number;
+  pointValueUsd: number;
+  binanceSymbol?: string;
+  tradingViewSymbol?: string;
+  description: string;
 }
 
 export const INSTRUMENT_METAS: Record<AssetSymbol, InstrumentMeta> = {
-  'NIFTY 50': {
-    symbol: 'NIFTY 50',
-    name: 'NIFTY 50 Index',
-    exchange: 'NSE_INDEX',
-    lotSize: 25,
-    tickSize: 0.05,
-    strikeStep: 50,
-    upstoxKey: 'NSE_INDEX|Nifty 50',
-    isIndex: true,
-    basePrice: 23398.10,
+  'BTC/USD': {
+    symbol: 'BTC/USD',
+    name: 'Bitcoin / US Dollar Perpetual',
+    category: 'CRYPTO',
+    basePrice: 64850.00,
+    tickSize: 0.10,
+    contractSize: 1.0,
+    lotStep: 0.01,
+    minOrderSize: 0.01,
+    maxLeverage: 100,
+    pointValueUsd: 1.0,
+    binanceSymbol: 'BTCUSDT',
+    tradingViewSymbol: 'BINANCE:BTCUSDT',
+    description: 'Global Crypto Benchmark with 24/7 institutional liquidity & deep order book flow.',
   },
-  'BANKNIFTY': {
-    symbol: 'BANKNIFTY',
-    name: 'NIFTY Bank Index',
-    exchange: 'NSE_INDEX',
-    lotSize: 15,
-    tickSize: 0.05,
-    strikeStep: 100,
-    upstoxKey: 'NSE_INDEX|Nifty Bank',
-    isIndex: true,
-    basePrice: 56606.55,
+  'XAU/USD': {
+    symbol: 'XAU/USD',
+    name: 'Gold Spot / US Dollar',
+    category: 'PRECIOUS_METALS',
+    basePrice: 2642.50,
+    tickSize: 0.01,
+    contractSize: 100.0, // 100 troy oz standard institutional lot
+    lotStep: 0.01, // 0.01 micro lot (1 oz)
+    minOrderSize: 0.01,
+    maxLeverage: 100,
+    pointValueUsd: 10.0, // $10 per pip ($0.10 move) per 1.00 standard lot
+    binanceSymbol: 'PAXGUSDT',
+    tradingViewSymbol: 'OANDA:XAUUSD',
+    description: 'Premier institutional safe-haven asset, sensitive to real yields, DXY, and geopolitical flows.',
   },
-  'SENSEX': {
-    symbol: 'SENSEX',
-    name: 'BSE SENSEX Index',
-    exchange: 'BSE_INDEX',
-    lotSize: 10,
-    tickSize: 0.05,
-    strikeStep: 100,
-    upstoxKey: 'BSE_INDEX|SENSEX',
-    isIndex: true,
-    basePrice: 74781.76,
+  'DXY': {
+    symbol: 'DXY',
+    name: 'US Dollar Index',
+    category: 'MACRO_CURRENCY',
+    basePrice: 101.45,
+    tickSize: 0.01,
+    contractSize: 1.0,
+    lotStep: 0.1,
+    minOrderSize: 0.1,
+    maxLeverage: 50,
+    pointValueUsd: 10.0,
+    tradingViewSymbol: 'TVC:DXY',
+    description: 'Global currency reserve index; strong inverse correlation to Gold (-0.88) and BTC (-0.74).',
   },
-  'RELIANCE': {
-    symbol: 'RELIANCE',
-    name: 'Reliance Industries Ltd',
-    exchange: 'NSE_EQ',
-    lotSize: 250,
+  'ETH/USD': {
+    symbol: 'ETH/USD',
+    name: 'Ethereum / US Dollar',
+    category: 'CRYPTO',
+    basePrice: 2580.00,
     tickSize: 0.05,
-    strikeStep: 20,
-    upstoxKey: 'NSE_EQ|INE002A01018',
-    isIndex: false,
-    basePrice: 1257.50,
+    contractSize: 1.0,
+    lotStep: 0.05,
+    minOrderSize: 0.05,
+    maxLeverage: 50,
+    pointValueUsd: 1.0,
+    binanceSymbol: 'ETHUSDT',
+    description: 'High-beta crypto risk gauge; ETH/BTC ratio signals altcoin liquidity injection.',
   },
-  'HDFCBANK': {
-    symbol: 'HDFCBANK',
-    name: 'HDFC Bank Ltd',
-    exchange: 'NSE_EQ',
-    lotSize: 550,
-    tickSize: 0.05,
-    strikeStep: 10,
-    upstoxKey: 'NSE_EQ|INE040A01034',
-    isIndex: false,
-    basePrice: 708.25,
+  'US10Y': {
+    symbol: 'US10Y',
+    name: 'US 10-Year Treasury Yield',
+    category: 'MACRO_YIELD',
+    basePrice: 3.72,
+    tickSize: 0.001,
+    contractSize: 1.0,
+    lotStep: 0.1,
+    minOrderSize: 0.1,
+    maxLeverage: 10,
+    pointValueUsd: 10.0,
+    description: 'Benchmark real interest rate indicator; inversely dictates non-yielding physical gold.',
   },
-  'TCS': {
-    symbol: 'TCS',
-    name: 'Tata Consultancy Services',
-    exchange: 'NSE_EQ',
-    lotSize: 175,
-    tickSize: 0.05,
-    strikeStep: 20,
-    upstoxKey: 'NSE_EQ|INE467B01029',
-    isIndex: false,
-    basePrice: 2200.80,
-  },
-  'INFY': {
-    symbol: 'INFY',
-    name: 'Infosys Ltd',
-    exchange: 'NSE_EQ',
-    lotSize: 400,
-    tickSize: 0.05,
-    strikeStep: 10,
-    upstoxKey: 'NSE_EQ|INE009A01021',
-    isIndex: false,
-    basePrice: 1037.70,
-  },
-  'ICICIBANK': {
-    symbol: 'ICICIBANK',
-    name: 'ICICI Bank Ltd',
-    exchange: 'NSE_EQ',
-    lotSize: 700,
-    tickSize: 0.05,
-    strikeStep: 10,
-    upstoxKey: 'NSE_EQ|INE090A01021',
-    isIndex: false,
-    basePrice: 1379.30,
-  },
-  'TATAMOTORS': {
-    symbol: 'TATAMOTORS',
-    name: 'Tata Motors Ltd',
-    exchange: 'NSE_EQ',
-    lotSize: 575,
-    tickSize: 0.05,
-    strikeStep: 5,
-    upstoxKey: 'NSE_EQ|INE155A01022',
-    isIndex: false,
-    basePrice: 301.10,
-  },
-  'MARUTI': {
-    symbol: 'MARUTI',
-    name: 'Maruti Suzuki India Ltd',
-    exchange: 'NSE_EQ',
-    lotSize: 50,
-    tickSize: 0.05,
-    strikeStep: 100,
-    upstoxKey: 'NSE_EQ|INE585B01010',
-    isIndex: false,
-    basePrice: 12400.00,
+  'XAG/USD': {
+    symbol: 'XAG/USD',
+    name: 'Silver Spot / US Dollar',
+    category: 'PRECIOUS_METALS',
+    basePrice: 31.40,
+    tickSize: 0.005,
+    contractSize: 5000.0,
+    lotStep: 0.01,
+    minOrderSize: 0.01,
+    maxLeverage: 50,
+    pointValueUsd: 50.0,
+    description: 'Industrial & monetary precious metal; Gold/Silver Ratio (GSR) signals precious metals cycles.',
   },
 };
 
@@ -148,44 +130,137 @@ export interface Candle {
   volume: number;
 }
 
-export interface CPRData {
-  tc: number; // Top Central
-  pivot: number; // Pivot Point
-  bc: number; // Bottom Central
-  cprWidth: number; // |tc - bc|
-  rangeType: 'NARROW' | 'AVERAGE' | 'WIDE';
-  virginCpr: boolean;
-  pdh: number; // Previous Day High
-  pdl: number; // Previous Day Low
-  camarilla: {
-    h3: number;
-    h4: number;
-    l3: number;
-    l4: number;
-  };
+export interface OrderBlock {
+  type: 'bullish' | 'bearish';
+  high: number;
+  low: number;
+  meanThreshold: number; // 50% midpoint
+  startIndex: number;
+  status: 'fresh' | 'tested' | 'mitigated';
+  mitigated?: boolean;
+  volumeScore: number;
+  timeframe: Timeframe;
 }
 
 export interface FVGZone {
   type: 'bullish' | 'bearish';
   top: number;
   bottom: number;
+  ce: number; // Consequent Encroachment (50% midpoint)
   startIndex: number;
-  mitigated: boolean;
-}
-
-export interface OrderBlock {
-  type: 'bullish' | 'bearish';
-  high: number;
-  low: number;
-  startIndex: number;
-  status: 'fresh' | 'mitigated';
+  status: 'open' | 'partial' | 'mitigated';
+  mitigated?: boolean;
+  fillPercent: number;
+  timeframe: Timeframe;
 }
 
 export interface LiquidityLevel {
-  type: 'BSL' | 'SSL';
+  type: 'BSL' | 'SSL' | 'PDH' | 'PDL' | 'ASH' | 'ASL' | 'EQH' | 'EQL';
   price: number;
   label: string;
   swept: boolean;
+  time?: number;
+}
+
+export interface MarketStructure {
+  trend: 'BULLISH' | 'BEARISH' | 'RANGING';
+  lastShift: 'BOS' | 'CHoCH' | 'MSS' | 'NONE';
+  shiftPrice?: number;
+  swingHigh: number;
+  swingLow: number;
+  premiumDiscount: 'DEEP_DISCOUNT' | 'DISCOUNT' | 'EQUILIBRIUM' | 'PREMIUM' | 'DEEP_PREMIUM';
+  equilibrium: number;
+  oteZone: {
+    upper: number;
+    lower: number;
+    optimal: number; // 0.705 Fib
+  };
+}
+
+export interface VolumeProfileNode {
+  price: number;
+  volume: number;
+  buyVol: number;
+  sellVol: number;
+  isPoc: boolean;
+  inValueArea: boolean;
+}
+
+export interface VolumeProfileData {
+  poc: number;
+  vah: number;
+  val: number;
+  totalVolume: number;
+  buyVolume: number;
+  sellVolume: number;
+  nodes: VolumeProfileNode[];
+}
+
+export interface CvdData {
+  delta: number;
+  cumulativeDelta: number;
+  buyRatio: number;
+  divergenceAlert: 'NONE' | 'BULLISH_ABSORPTION' | 'BEARISH_EXHAUSTION';
+}
+
+export type KillzoneType = 'ASIA' | 'LONDON_OPEN' | 'NY_OPEN' | 'LONDON_CLOSE' | 'OFF_HOURS' | 'ASIAN_RANGE';
+
+export interface KillzoneInfo {
+  activeKillzone?: KillzoneType;
+  activeZone?: string;
+  label: string;
+  timeRemaining: string;
+  description: string;
+  manipulationState: 'ACCUMULATION' | 'JUDAS_SWEEP' | 'EXPANSION' | 'DISTRIBUTION' | 'ASIAN RANGE HIGH/LOW PURGE' | 'JUDAS SWING EXPANSION' | 'LIQUIDITY ACCUMULATION' | 'PROFIT TAKING & RUNNERS';
+  sessionRange?: {
+    high: number;
+    low: number;
+    sweptHigh: boolean;
+    sweptLow: boolean;
+  };
+}
+
+export interface MacroEconomicEvent {
+  id: string;
+  time: string;
+  event: string;
+  impact: 'HIGH' | 'MED' | 'LOW';
+  currency: string;
+  forecast: string;
+  previous: string;
+  countdown: string;
+  isRedFolder?: boolean;
+}
+
+export interface MacroIntermarketData {
+  activeKillzone: KillzoneInfo;
+  dxy: {
+    value: number;
+    change: number;
+    correlationWithBtc: number; // e.g. -0.76
+    correlationWithGold: number; // e.g. -0.88
+    trend: 'BULLISH' | 'BEARISH' | 'CONSOLIDATING';
+  };
+  us10y: {
+    value: number;
+    change: number;
+    impactOnGold: 'HEADWIND' | 'TAILWIND' | 'NEUTRAL';
+  };
+  btcDerivatives?: {
+    fundingRate: number; // e.g. +0.0085%
+    fundingApr: number; // e.g. +9.3%
+    openInterestUsd: number; // e.g. $34.8B
+    longLiquidations1h: number;
+    shortLiquidations1h: number;
+    squeezeRisk: 'LOW' | 'MODERATE' | 'SHORT_SQUEEZE_RISK' | 'LONG_SQUEEZE_RISK';
+    sentiment: 'EXTREME_GREED' | 'GREED' | 'NEUTRAL' | 'FEAR' | 'EXTREME_FEAR';
+  };
+  goldMacro?: {
+    realYield: number;
+    goldSilverRatio: number;
+    safeHavenFlow: 'STRONG_INFLOW' | 'STABLE' | 'OUTFLOW';
+  };
+  economicEvents: MacroEconomicEvent[];
 }
 
 export interface OrderBookLevel {
@@ -194,6 +269,7 @@ export interface OrderBookLevel {
   total: number;
   percent: number;
   ordersCount?: number;
+  isIceberg?: boolean;
 }
 
 export interface TapeTrade {
@@ -202,46 +278,49 @@ export interface TapeTrade {
   price: number;
   amount: number;
   side: 'buy' | 'sell';
-  isBlockTrade?: boolean;
+  isBlockTrade?: boolean; // Whale trade
+  usdValue?: number;
 }
 
 export interface Position {
   id: string;
   symbol: AssetSymbol;
-  instrumentType?: 'FUTURES' | 'OPTIONS' | 'EQUITY';
-  optionDetails?: {
-    strike: number;
-    optionType: 'CE' | 'PE';
-    expiry: string;
-  };
-  product: ProductType;
   side: 'BUY' | 'SELL';
+  product: ProductType;
   entryPrice: number;
   currentPrice: number;
-  size: number; // Quantity in units
-  lots: number;
+  size: number; // BTC quantity or Gold lots
+  lots?: number;
   leverage: number;
   margin: number;
+  liquidationPrice: number;
   pnl: number;
   pnlPercent: number;
+  roePercent?: number;
   stopLoss?: number;
   takeProfit?: number;
-  openTime: string | number;
+  tp1?: number;
+  tp2?: number;
+  tp3?: number;
+  openTime: string;
+  breakEvenActive?: boolean;
+  trailingStopActive?: boolean;
 }
 
 export interface WorkingOrder {
   id: string;
   symbol: AssetSymbol;
-  type: 'MARKET' | 'LIMIT' | 'SL' | 'SL-M';
+  type: 'MARKET' | 'LIMIT' | 'STOP' | 'TRAILING_STOP';
   product: ProductType;
   side: 'BUY' | 'SELL';
   price: number;
   triggerPrice?: number;
   size: number;
-  lots: number;
+  lots?: number;
+  leverage: number;
   stopLoss?: number;
   takeProfit?: number;
-  status: 'PENDING' | 'FILLED' | 'CANCELLED';
+  status?: 'PENDING' | 'FILLED' | 'CANCELLED';
   timestamp?: string;
   createdAt?: string | number;
 }
@@ -254,143 +333,92 @@ export interface TradeHistoryItem {
   entryPrice: number;
   exitPrice: number;
   size: number;
-  lots?: number;
+  leverage?: number;
   pnl: number;
   pnlPercent: number;
-  closeTime?: string;
-  exitTime?: string | number;
+  fees?: number;
+  netPnl?: number;
+  entryTime: string;
+  exitTime: string;
   setupName?: string;
-  exitReason?: string;
+  reason?: string;
+  exitReason?: 'TP1' | 'TP2' | 'TP3' | 'SL' | 'MANUAL' | 'LIQUIDATION' | 'BE';
 }
 
 export interface InstitutionalSetup {
   asset: AssetSymbol;
   signal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
   setupName: string;
-  instrumentRecommendation: string; // e.g. "NIFTY 25100 CE" or "BANKNIFTY 51600 PE"
-  confluenceScore: number; // 0 - 100
-  winProbability: number; // e.g. 82%
-  riskRewardRatio: string; // e.g. 1:2.8
+  confluenceScore: number; // 0 - 100%
+  winProbability: number; // e.g. 84%
+  riskRewardRatio: string; // e.g. "1:3.8"
   entryPrice: number;
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
   takeProfit3: number;
-  cprContext: string;
-  optionOiContext: string;
+  recommendedSize: number; // e.g. 0.35 BTC or 1.25 Lots Gold
+  riskAmountUsd: number; // e.g. $1,000 for 1% risk
+  smcThesis: string;
+  smcRationale?: string;
   keyConfluences: string[];
   invalidationRule: string;
-  institutionalRationale: string;
   executionChecklist: string[];
   timestamp?: string;
 }
 
 export interface ConfluenceFactor {
-  id: string;
-  category: 'CPR_PIVOT' | 'SMC' | 'OPTION_OI' | 'FII_DII' | 'INDIA_VIX' | 'BREADTH' | 'ORDER_FLOW' | 'INDICATORS';
+  id?: string;
+  category: 
+    | 'STRUCTURE' 
+    | 'ORDER_BLOCK' 
+    | 'LIQUIDITY' 
+    | 'CVD_ORDERFLOW' 
+    | 'VWAP_BANDS' 
+    | 'OTE_FIB' 
+    | 'MACRO_DXY' 
+    | 'KILLZONE'
+    | 'SMC'
+    | 'ORDER_FLOW'
+    | 'MACRO_INTERMARKET'
+    | 'TECHNICAL';
   name: string;
+  value?: string;
   status: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-  score?: number; // 0 to 100
-  weight?: number; // 0 to 100
+  score?: number; // 0 - 100
+  weight?: number;
   detail: string;
-  institutionalSignificance: string;
+  institutionalSignificance?: string;
 }
 
-export interface OptionChainStrike {
-  strike: number;
-  ceLtp: number;
-  ceChange: number;
-  ceOi: number;
-  ceOiChange: number;
-  ceVolume: number;
-  ceIv: number;
-  peLtp: number;
-  peChange: number;
-  peOi: number;
-  peOiChange: number;
-  peVolume: number;
-  peIv: number;
-  isAtm: boolean;
-}
-
-export interface OptionChainData {
-  symbol: AssetSymbol;
-  underlyingPrice: number;
-  expiry: string;
-  pcr: number;
-  maxPain: number;
-  totalCeOi: number;
-  totalPeOi: number;
-  atmStraddle: number;
-  sentiment: 'BULLISH' | 'MILDLY_BULLISH' | 'NEUTRAL' | 'BEARISH' | 'STRONG_BEARISH';
-  strikes: OptionChainStrike[];
-}
-
-export interface MacroData {
-  activeSession: string; // "NSE Regular Trading Session (09:15 - 15:30 IST)"
-  indiaVix: {
-    value: number;
-    change: number;
-    regime?: string; // "Low Volatility (Option Writing Favored)" or "Active Trend Zone"
-    trend?: string;
-  };
-  fiiDiiFlow?: {
-    fiiNet: number; // In ₹ Crores e.g. -1240.5
-    diiNet: number; // In ₹ Crores e.g. +2180.2
-    totalNet: number;
-    bias: string;
-  };
-  fiiDii?: {
-    fiiNetCr: number;
-    diiNetCr: number;
-  };
-  usdInr?: {
-    value: number;
-    trend: string;
-  };
-  marketBreadth?: {
-    advances: number;
-    declines: number;
-    unchanged: number;
-    ratio: number;
-  };
-  niftyPcr?: number;
-  bankniftyPcr?: number;
-  sectoralPerformance?: {
-    name: string;
-    change: number;
-    leadStock: string;
-  }[];
-}
-
-export interface UpstoxBrokerStatus {
-  connected: boolean;
-  mode: 'LIVE' | 'SIMULATED' | 'SIMULATION';
+export interface BrokerConnection {
+  isConnected: boolean;
+  mode: 'LIVE' | 'SIMULATION';
+  brokerType: 'BINANCE_FUTURES' | 'BYBIT' | 'METATRADER_MT5' | 'OANDA' | 'INSTITUTIONAL_DMA';
   brokerName: string;
-  clientName: string;
-  userId: string;
-  tokenMasked?: string;
-  hasToken: boolean;
-  balance?: number; // in ₹ INR
-  utilizedMargin?: number;
-  availableMargin?: number;
-  tokenExpiry?: string;
-  liveFeed?: string;
-  marketOpen?: boolean;
-  feedLatencyMs?: number;
-  error?: string;
+  accountId: string;
+  apiKeyMasked?: string;
+  balance: number; // USD
+  equity?: number;
+  availableMargin: number;
+  usedMargin: number;
+  latencyMs: number;
+  statusMessage: string;
 }
 
 export interface AccountStats {
-  balance: number; // in ₹ INR
+  balance: number; // USD
   equity: number;
-  marginUsed: number;
+  marginUsed?: number;
+  usedMargin?: number;
   freeMargin: number;
   marginLevel: number;
   realizedPnl: number;
+  realizedPnL?: number;
+  unrealizedPnL?: number;
   totalTrades: number;
-  winCount: number;
-  lossCount: number;
+  winCount?: number;
+  lossCount?: number;
   winRate: number;
   profitFactor: number;
 }

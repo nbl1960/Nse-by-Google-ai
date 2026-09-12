@@ -544,7 +544,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
           ctx.fillStyle = '#cbd5e1';
           ctx.font = '9px "JetBrains Mono", monospace';
           ctx.textAlign = 'left';
-          ctx.fillText(`[${liq.type}] ${liq.label} - ₹${liq.price.toFixed(1)}`, 8, y - 4);
+          ctx.fillText(`[${liq.type}] ${liq.label} - $${liq.price.toFixed(liq.price > 1000 ? 1 : 2)}`, 8, y - 4);
         }
       });
     }
@@ -621,7 +621,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       ctx.fillStyle = '#34d399';
       ctx.font = 'bold 9px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`▲ H ₹${candles[highestIdx].high.toFixed(1)}`, hX, hY - 10);
+      ctx.fillText(`▲ H $${candles[highestIdx].high.toFixed(candles[highestIdx].high > 1000 ? 1 : 2)}`, hX, hY - 10);
 
       // Low Badge
       ctx.fillStyle = 'rgba(244, 63, 94, 0.2)';
@@ -633,7 +633,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       ctx.fillStyle = '#fb7185';
       ctx.font = 'bold 9px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`▼ L ₹${candles[lowestIdx].low.toFixed(1)}`, lX, lY + 18);
+      ctx.fillText(`▼ L $${candles[lowestIdx].low.toFixed(candles[lowestIdx].low > 1000 ? 1 : 2)}`, lX, lY + 18);
     }
 
     // Draw VWAP and Bands
@@ -665,7 +665,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       ctx.beginPath();
       let startedUpper = false;
       for (let i = minVisibleI; i <= maxVisibleI; i++) {
-        const val = indicators.vwapData.upperBand[i];
+        const val = indicators.vwapData.upperBand1[i];
         if (val !== null && val !== undefined) {
           const x = getX(i);
           const y = getY(val);
@@ -683,7 +683,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       ctx.beginPath();
       let startedLower = false;
       for (let i = minVisibleI; i <= maxVisibleI; i++) {
-        const val = indicators.vwapData.lowerBand[i];
+        const val = indicators.vwapData.lowerBand1[i];
         if (val !== null && val !== undefined) {
           const x = getX(i);
           const y = getY(val);
@@ -757,7 +757,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       ctx.fillStyle = pos.side === 'BUY' ? '#10b981' : '#f43f5e';
       ctx.font = 'bold 10px "JetBrains Mono", monospace';
       ctx.textAlign = 'left';
-      ctx.fillText(`[${pos.product} ${pos.side}] ₹${pos.entryPrice.toFixed(1)} (${pos.lots}L / ${pos.size} Qty)`, 8, y - 5);
+      ctx.fillText(`[${pos.product} ${pos.side}] $${pos.entryPrice.toFixed(pos.entryPrice > 1000 ? 1 : 2)} (${pos.lots ?? pos.size} ${pos.symbol === 'BTC/USD' ? 'BTC' : 'Lots'})`, 8, y - 5);
     });
 
     // Draw Active Setup Levels (SL, TP1, TP2)
@@ -779,7 +779,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
         ctx.fillStyle = '#ef4444';
         ctx.font = 'bold 9px "JetBrains Mono", monospace';
         ctx.textAlign = 'left';
-        ctx.fillText(`[SL TRIGGER] ₹${activeSetup.stopLoss}`, 10, ySl - 4);
+        ctx.fillText(`[SL TRIGGER] $${activeSetup.stopLoss}`, 10, ySl - 4);
       }
 
       // TP1 Level (Emerald)
@@ -791,7 +791,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
         ctx.lineTo(chartWidth, yTp1);
         ctx.stroke();
         ctx.fillStyle = '#10b981';
-        ctx.fillText(`[TP1 1:1.5] ₹${activeSetup.takeProfit1}`, 10, yTp1 - 4);
+        ctx.fillText(`[TP1 1:1.5] $${activeSetup.takeProfit1}`, 10, yTp1 - 4);
       }
 
       // TP2 Level (Bright Green)
@@ -802,7 +802,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
         ctx.lineTo(chartWidth, yTp2);
         ctx.stroke();
         ctx.fillStyle = '#34d399';
-        ctx.fillText(`[TP2 TARGET] ₹${activeSetup.takeProfit2}`, 10, yTp2 - 4);
+        ctx.fillText(`[TP2 TARGET] $${activeSetup.takeProfit2}`, 10, yTp2 - 4);
       }
 
       ctx.setLineDash([]);
@@ -828,7 +828,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 11px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`₹${currentPrice.toFixed(1)}`, chartWidth + rightAxisWidth / 2, yLive + 4);
+      ctx.fillText(`$${currentPrice.toFixed(currentPrice > 1000 ? 1 : 2)}`, chartWidth + rightAxisWidth / 2, yLive + 4);
     } else if (yLive < 0) {
       // Out of view above
       ctx.fillStyle = '#0284c7';
@@ -838,7 +838,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 10px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`▲ ₹${currentPrice.toFixed(1)}`, chartWidth + rightAxisWidth / 2, 15);
+      ctx.fillText(`▲ $${currentPrice.toFixed(currentPrice > 1000 ? 1 : 2)}`, chartWidth + rightAxisWidth / 2, 15);
     } else if (yLive > chartHeight) {
       // Out of view below
       ctx.fillStyle = '#0284c7';
@@ -848,7 +848,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 10px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`▼ ₹${currentPrice.toFixed(1)}`, chartWidth + rightAxisWidth / 2, chartHeight - 7);
+      ctx.fillText(`▼ $${currentPrice.toFixed(currentPrice > 1000 ? 1 : 2)}`, chartWidth + rightAxisWidth / 2, chartHeight - 7);
     }
 
     // Crosshair rendering
@@ -888,7 +888,7 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
         ctx.fillStyle = '#f8fafc';
         ctx.font = '10px "JetBrains Mono", monospace';
         ctx.textAlign = 'center';
-        ctx.fillText(`₹${chPrice.toFixed(chPrice > 1000 ? 1 : 2)}`, chartWidth + rightAxisWidth / 2, chY + 4);
+        ctx.fillText(`$${chPrice.toFixed(chPrice > 1000 ? 1 : 2)}`, chartWidth + rightAxisWidth / 2, chY + 4);
 
         // Crosshair Time Pill on Bottom Axis
         if (hasCandle) {
@@ -1371,20 +1371,20 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
             </div>
             <div>
               <span className="text-slate-600">O:</span>{' '}
-              <span className="text-slate-200">₹{hoveredCandle.open}</span>
+              <span className="text-slate-200">${hoveredCandle.open}</span>
             </div>
             <div>
               <span className="text-slate-600">H:</span>{' '}
-              <span className="text-emerald-400">₹{hoveredCandle.high}</span>
+              <span className="text-emerald-400">${hoveredCandle.high}</span>
             </div>
             <div>
               <span className="text-slate-600">L:</span>{' '}
-              <span className="text-rose-400">₹{hoveredCandle.low}</span>
+              <span className="text-rose-400">${hoveredCandle.low}</span>
             </div>
             <div>
               <span className="text-slate-600">C:</span>{' '}
               <span className={hoveredCandle.close >= hoveredCandle.open ? 'text-emerald-400' : 'text-rose-400'}>
-                ₹{hoveredCandle.close}
+                ${hoveredCandle.close}
               </span>
             </div>
             <div>
@@ -1477,9 +1477,9 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
             </div>
 
             <div className="flex items-center gap-2 font-mono text-[11px] text-slate-400">
-              <span>Entry: <b className="text-slate-200">₹{activeSetup.entryPrice}</b></span>
-              <span>SL: <b className="text-rose-400">₹{activeSetup.stopLoss}</b></span>
-              <span>TP1: <b className="text-emerald-400">₹{activeSetup.takeProfit1}</b></span>
+              <span>Entry: <b className="text-slate-200">${activeSetup.entryPrice}</b></span>
+              <span>SL: <b className="text-rose-400">${activeSetup.stopLoss}</b></span>
+              <span>TP1: <b className="text-emerald-400">${activeSetup.takeProfit1}</b></span>
             </div>
 
             <div className="flex items-center gap-1.5 ml-auto">

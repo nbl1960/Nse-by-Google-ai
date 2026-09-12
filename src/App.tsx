@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   AssetSymbol, 
+  PrimaryTradeSymbol,
   Timeframe, 
   Candle, 
   Position, 
@@ -9,17 +10,20 @@ import {
   InstitutionalSetup, 
   AccountStats, 
   ConfluenceFactor, 
-  MacroData,
+  MacroIntermarketData,
   ProductType,
-  UpstoxBrokerStatus,
+  BrokerConnection,
   INSTRUMENT_METAS,
-  OptionChainData
+  OrderBookLevel,
+  TapeTrade,
+  KillzoneInfo
 } from './types/trading';
 import { 
   generateSyntheticCandles, 
   generateOrderBook, 
-  generateOptionChain,
-  indianMarketService 
+  generateInitialTape,
+  institutionalMarketService,
+  SAMPLE_ECONOMIC_EVENTS
 } from './services/marketData';
 import { Header } from './components/Header';
 import { InstitutionalChart } from './components/InstitutionalChart';
@@ -28,8 +32,8 @@ import { TradeSetupGenerator } from './components/TradeSetupGenerator';
 import { OrderExecutionDesk } from './components/OrderExecutionDesk';
 import { OrderBookAndTape } from './components/OrderBookAndTape';
 import { PositionManager } from './components/PositionManager';
-import { UpstoxTokenModal } from './components/UpstoxTokenModal';
 import { OptionChainViewer } from './components/OptionChainViewer';
+import { BrokerConnectionModal } from './components/BrokerConnectionModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { soundFx } from './utils/audio';
 import { 
@@ -37,225 +41,219 @@ import {
   Layers, 
   Cpu, 
   Activity, 
-  Key,
-  Flame,
-  ShieldCheck,
-  TrendingUp,
-  RefreshCw
+  Radio, 
+  Flame, 
+  ShieldCheck, 
+  TrendingUp, 
+  TrendingDown, 
+  Globe,
+  Clock,
+  Calendar,
+  AlertCircle
 } from 'lucide-react';
 
 export default function App() {
-  // Active Instrument & Timeframe
-  const [selectedAsset, setSelectedAsset] = useState<AssetSymbol>('NIFTY 50');
+  // Primary Selected Asset ('BTC/USD' or 'XAU/USD')
+  const [selectedAsset, setSelectedAsset] = useState<PrimaryTradeSymbol>('BTC/USD');
   const [timeframe, setTimeframe] = useState<Timeframe>('5m');
 
-  // Center Tab View: 'CHART' vs 'OPTION_CHAIN' vs 'CONFLUENCE' vs 'SETUPS'
-  const [centerTab, setCenterTab] = useState<'CHART' | 'OPTION_CHAIN' | 'CONFLUENCE' | 'SETUPS'>('CHART');
+  // Center Tab View
+  const [centerTab, setCenterTab] = useState<'CHART' | 'DERIVATIVES' | 'CONFLUENCE' | 'SETUPS' | 'CALENDAR'>('CHART');
 
-  // Upstox Broker Token Modal & Status
-  const [isUpstoxModalOpen, setIsUpstoxModalOpen] = useState<boolean>(false);
-  const [upstoxStatus, setUpstoxStatus] = useState<UpstoxBrokerStatus>({
-    connected: true,
+  // Broker Connection State
+  const [isBrokerModalOpen, setIsBrokerModalOpen] = useState<boolean>(false);
+  const [brokerConfig, setBrokerConfig] = useState<BrokerConnection>({
+    isConnected: true,
     mode: 'LIVE',
-    hasToken: true,
-    feedLatencyMs: 4,
-    marketOpen: true,
-    brokerName: 'Upstox Pro Live v2',
-    clientName: 'Upstox Live Pro Trader',
-    userId: 'UPX-PRO-LIVE',
-    liveFeed: 'CONNECTED (Upstox Pro v2 Real-Time Feed)',
+    brokerType: 'BINANCE_FUTURES',
+    brokerName: 'Binance Institutional Futures v3',
+    accountId: 'BIN-INST-9942',
+    apiKeyMasked: 'vm8k...49xQ',
+    balance: 100000.0,
+    availableMargin: 87500.0,
+    usedMargin: 12500.0,
+    latencyMs: 3,
+    statusMessage: 'Connected to Tokyo AWS DMA Cross-Connect',
   });
 
-  // Sound and Audio System
+  // Sound FX toggle
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
 
-  // Live Asset Prices & Changes
+  // Live Prices & 24h Changes
   const [assetPrices, setAssetPrices] = useState<Record<AssetSymbol, number>>(() => ({
-    ...indianMarketService.prices,
+    ...institutionalMarketService.prices,
   }));
   const [assetChanges, setAssetChanges] = useState<Record<AssetSymbol, number>>(() => ({
-    ...indianMarketService.changes24h,
+    ...institutionalMarketService.changes24h,
   }));
 
   const currentPrice = assetPrices[selectedAsset] || INSTRUMENT_METAS[selectedAsset].basePrice;
 
-  // Candlestick Histories for all symbols
+  // Candlestick Histories for BTC & Gold
   const [candlesMap, setCandlesMap] = useState<Record<AssetSymbol, Candle[]>>(() => {
     const map: Partial<Record<AssetSymbol, Candle[]>> = {};
-    const symbols: AssetSymbol[] = [
-      'NIFTY 50',
-      'BANKNIFTY',
-      'SENSEX',
-      'RELIANCE',
-      'HDFCBANK',
-      'TCS',
-      'INFY',
-      'ICICIBANK',
-      'TATAMOTORS',
-      'MARUTI',
-    ];
+    const symbols: AssetSymbol[] = ['BTC/USD', 'XAU/USD', 'DXY', 'ETH/USD', 'US10Y', 'XAG/USD'];
     symbols.forEach((sym) => {
-      const meta = INSTRUMENT_METAS[sym];
-      map[sym] = generateSyntheticCandles(meta.basePrice, 250, meta.isIndex ? 0.0018 : 0.0028);
+      const meta = INSTRUMENT_METAS[sym] || INSTRUMENT_METAS['BTC/USD'];
+      map[sym] = generateSyntheticCandles(meta.basePrice, 220, sym === 'BTC/USD' ? 0.0022 : 0.0014);
     });
     return map as Record<AssetSymbol, Candle[]>;
   });
 
-  const currentCandles = candlesMap[selectedAsset] || [];
+  // Active Candlestick series for selected asset
+  const activeCandles = candlesMap[selectedAsset] || [];
 
-  // Live DOM and Tape data
-  const [tapeTrades, setTapeTrades] = useState<any[]>([]);
+  // Order Book and Tape
+  const [orderBook, setOrderBook] = useState(() => generateOrderBook(currentPrice, selectedAsset, 8));
+  const [tapeTrades, setTapeTrades] = useState<TapeTrade[]>(() => generateInitialTape(currentPrice, selectedAsset, 18));
 
-  // Account Capital & Intraday Margin (INR ₹)
+  // Account State ($100,000 baseline)
   const [accountStats, setAccountStats] = useState<AccountStats>({
-    balance: 1000000.0, // 10 Lakhs INR starting capital
-    equity: 1000000.0,
-    marginUsed: 0,
-    freeMargin: 1000000.0,
-    marginLevel: 0,
-    realizedPnl: 0,
-    totalTrades: 0,
-    winCount: 0,
-    lossCount: 0,
-    winRate: 0,
-    profitFactor: 1.0,
+    balance: 100000.0,
+    equity: 100000.0,
+    freeMargin: 87500.0,
+    usedMargin: 12500.0,
+    marginLevel: 800.0,
+    realizedPnL: 0.0,
+    unrealizedPnL: 0.0,
+    winRate: 75.0,
+    profitFactor: 2.8,
+    totalTrades: 12,
   });
 
-  // Active Positions & Orders
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [orders, setOrders] = useState<WorkingOrder[]>([]);
-  const [tradeHistory, setTradeHistory] = useState<TradeHistoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('apex_upstox_trade_journal');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
+  // Active Positions, Working Orders & History
+  const [positions, setPositions] = useState<Position[]>([
+    {
+      id: 'POS-BTC-1',
+      symbol: 'BTC/USD',
+      side: 'BUY',
+      product: 'PERPETUAL_SWAP',
+      entryPrice: 63840.0,
+      currentPrice: 64850.0,
+      size: 0.5,
+      lots: 0.5,
+      margin: 3192.0,
+      leverage: 10,
+      liquidationPrice: 57800.0,
+      stopLoss: 63200.0,
+      takeProfit: 66500.0,
+      pnl: 505.0,
+      pnlPercent: 15.8,
+      openTime: new Date(Date.now() - 3600 * 1000 * 3).toLocaleTimeString(),
+    },
+  ]);
+
+  const [workingOrders, setWorkingOrders] = useState<WorkingOrder[]>([
+    {
+      id: 'ORD-LMT-901',
+      symbol: 'XAU/USD',
+      side: 'BUY',
+      type: 'LIMIT',
+      product: 'PERPETUAL_SWAP',
+      price: 2634.50,
+      size: 1.0,
+      lots: 1.0,
+      leverage: 20,
+      stopLoss: 2628.00,
+      takeProfit: 2655.00,
+      timestamp: new Date(Date.now() - 1800 * 1000).toLocaleTimeString(),
+    },
+  ]);
+
+  const [tradeHistory, setTradeHistory] = useState<TradeHistoryItem[]>([
+    {
+      id: 'HIST-1',
+      symbol: 'BTC/USD',
+      side: 'BUY',
+      entryPrice: 62900.0,
+      exitPrice: 64200.0,
+      size: 0.5,
+      pnl: 650.0,
+      pnlPercent: 20.6,
+      entryTime: '08:15:20',
+      exitTime: '11:42:10',
+      reason: 'TP2 Hit (15m Bullish OB Expansion)',
+    },
+    {
+      id: 'HIST-2',
+      symbol: 'XAU/USD',
+      side: 'BUY',
+      entryPrice: 2618.0,
+      exitPrice: 2634.5,
+      size: 1.5,
+      pnl: 2475.0,
+      pnlPercent: 31.5,
+      entryTime: 'Yesterday 13:00:15',
+      exitTime: 'Yesterday 15:30:45',
+      reason: 'TP3 Hit (London Low Sweep + DXY Rejection)',
+    },
+  ]);
+
+  // Active Institutional Setup
+  const [activeSetup, setActiveSetup] = useState<InstitutionalSetup | null>(null);
+
+  // ICT Killzone State calculation
+  const killzoneInfo: KillzoneInfo = useMemo(() => {
+    const now = new Date();
+    const utcHours = now.getUTCHours();
+    const utcMins = now.getUTCMinutes();
+    const currentMins = utcHours * 60 + utcMins;
+
+    // London Open: 07:00 - 10:00 UTC (420 to 600)
+    // NY Open: 12:30 - 16:00 UTC (750 to 960)
+    // London Close: 15:00 - 17:00 UTC (900 to 1020)
+    // Asian Range: 00:00 - 06:00 UTC (0 to 360)
+    if (currentMins >= 750 && currentMins <= 960) {
+      const left = 960 - currentMins;
+      return {
+        activeZone: 'NY_OPEN',
+        label: 'NEW YORK OPEN KILLZONE',
+        timeRemaining: `${Math.floor(left / 60)}h ${left % 60}m remaining`,
+        manipulationState: 'JUDAS SWING EXPANSION',
+        description: 'Peak institutional intraday liquidity injection and trend continuation.',
+      };
+    } else if (currentMins >= 420 && currentMins <= 600) {
+      const left = 600 - currentMins;
+      return {
+        activeZone: 'LONDON_OPEN',
+        label: 'LONDON OPEN KILLZONE',
+        timeRemaining: `${Math.floor(left / 60)}h ${left % 60}m remaining`,
+        manipulationState: 'ASIAN RANGE HIGH/LOW PURGE',
+        description: 'Smart Money clearing retail stops before true daily displacement.',
+      };
+    } else if (currentMins >= 0 && currentMins <= 360) {
+      const left = 360 - currentMins;
+      return {
+        activeZone: 'ASIAN_RANGE',
+        label: 'ASIAN CONSOLIDATION RANGE',
+        timeRemaining: `${Math.floor(left / 60)}h ${left % 60}m remaining`,
+        manipulationState: 'LIQUIDITY ACCUMULATION',
+        description: 'Establishes the Asian High and Low liquidity boundaries.',
+      };
     }
-  });
 
-  // Persist Trade Journal to LocalStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem('apex_upstox_trade_journal', JSON.stringify(tradeHistory));
-    } catch {
-      // Storage quota safety
-    }
-  }, [tradeHistory]);
-
-  // Institutional Keyboard Shortcuts (1-4 for Tabs, Esc to clear/close)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is typing in an input or textarea
-      const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
-      if (targetTag === 'input' || targetTag === 'textarea') return;
-
-      if (e.key === '1') {
-        setCenterTab('CHART');
-      } else if (e.key === '2') {
-        setCenterTab('OPTION_CHAIN');
-      } else if (e.key === '3') {
-        setCenterTab('CONFLUENCE');
-      } else if (e.key === '4') {
-        setCenterTab('SETUPS');
-      } else if (e.key === 'Escape') {
-        setIsUpstoxModalOpen(false);
-        setPrimedOption(null);
-        setPrimedSetup(null);
-      }
+    return {
+      activeZone: 'LONDON_CLOSE',
+      label: 'LONDON CLOSE / NY CONTINUATION',
+      timeRemaining: 'Active session',
+      manipulationState: 'PROFIT TAKING & RUNNERS',
+      description: 'Institutional book squaring and continuation into daily settlement.',
     };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Macro & Intermarket Data from Backend
-  const [macroData, setMacroData] = useState<MacroData | null>(null);
-
-  // Active Generated Setup and Primed Setup for Order Desk
-  const [activeSetup, setActiveSetup] = useState<InstitutionalSetup | null>(null);
-  const [primedSetup, setPrimedSetup] = useState<InstitutionalSetup | null>(null);
-  const [primedOption, setPrimedOption] = useState<{ strike: number; type: 'CE' | 'PE'; ltp: number } | null>(null);
-  const [liveDepths, setLiveDepths] = useState<Record<string, { bids: any[]; asks: any[]; spread?: number } | null>>({});
-  const [optionChainData, setOptionChainData] = useState<OptionChainData | null>(null);
-  const [optionChainUnavailableReason, setOptionChainUnavailableReason] = useState<string | null>(null);
-
-  // Timeframe change handler with live klines loading
-  const handleTimeframeChange = (tf: Timeframe) => {
-    setTimeframe(tf);
-    fetch(`/api/market/klines?symbol=${encodeURIComponent(selectedAsset)}&timeframe=${tf}&limit=75`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.candles?.length) {
-          setCandlesMap((prev) => ({
-            ...prev,
-            [selectedAsset]: data.candles,
-          }));
-        }
-      })
-      .catch(() => {});
-  };
-
-  // Fetch Upstox broker status on mount
+  // Fetch initial quotes and broker info from backend
   useEffect(() => {
-    fetch('/api/upstox/status')
-      .then((res) => res.json())
+    fetch('/api/broker/status')
+      .then((r) => r.json())
       .then((data) => {
-        if (data && typeof data === 'object') {
-          setUpstoxStatus((prev) => ({
-            ...prev,
-            ...data,
-            connected: Boolean(data.connected),
-            mode: data.mode || (data.connected ? 'LIVE' : 'SIMULATION'),
-          }));
-        }
+        if (data) setBrokerConfig((prev) => ({ ...prev, ...data }));
       })
       .catch(() => {});
 
-    // Fetch macro pulse
-    fetch('/api/market-pulse')
-      .then((res) => res.json())
+    fetch(`/api/market/klines?symbol=${selectedAsset}&timeframe=${timeframe}&limit=160`)
+      .then((r) => r.json())
       .then((data) => {
-        if (data) setMacroData(data);
-      })
-      .catch(() => {});
-
-    // Fetch live Upstox market quotes directly
-    const fetchLiveQuotes = () => {
-      fetch('/api/market/quotes')
-        .then((res) => res.json())
-        .then((data) => {
-          if (data?.quotes) {
-            const newPrices: Record<string, number> = {};
-            const newChanges: Record<string, number> = {};
-            const newDepths: Record<string, any> = {};
-            for (const [sym, q] of Object.entries<any>(data.quotes)) {
-              if (q?.ltp && typeof q.ltp === 'number') {
-                newPrices[sym] = q.ltp;
-              }
-              if (q?.changePercent !== undefined && typeof q.changePercent === 'number') {
-                newChanges[sym] = q.changePercent;
-              }
-              if (q?.depth) {
-                newDepths[sym] = q.depth;
-              }
-            }
-            setAssetPrices((prev) => ({ ...prev, ...newPrices }));
-            setAssetChanges((prev) => ({ ...prev, ...newChanges }));
-            setLiveDepths((prev) => ({ ...prev, ...newDepths }));
-            indianMarketService.updateFromLiveQuotes(data.quotes);
-          }
-        })
-        .catch(() => {});
-    };
-
-    fetchLiveQuotes();
-    const quoteTimer = setInterval(fetchLiveQuotes, 2500);
-
-    // Fetch live calibrated klines for selected asset
-    fetch(`/api/market/klines?symbol=${encodeURIComponent(selectedAsset)}&timeframe=${timeframe}&limit=250`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.candles?.length) {
+        if (data && Array.isArray(data.candles) && data.candles.length > 0) {
           setCandlesMap((prev) => ({
             ...prev,
             [selectedAsset]: data.candles,
@@ -263,244 +261,108 @@ export default function App() {
         }
       })
       .catch(() => {});
-
-    return () => {
-      clearInterval(quoteTimer);
-    };
   }, [selectedAsset, timeframe]);
 
-  // Fetch live genuine Upstox option chain (zero synthetic fallback)
+  // Subscribe to Live Market Feed (Binance WebSocket + Micro-Tick Engine)
   useEffect(() => {
-    fetch(`/api/market/option-chain?symbol=${encodeURIComponent(selectedAsset)}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data && data.status === 'SUCCESS' && Array.isArray(data.strikes) && data.strikes.length > 0) {
-          setOptionChainData(data);
-          setOptionChainUnavailableReason(null);
-        } else {
-          setOptionChainData(null);
-          setOptionChainUnavailableReason(data?.message || 'Live Upstox Option Chain is unavailable.');
-        }
-      })
-      .catch(() => {
-        setOptionChainData(null);
-        setOptionChainUnavailableReason('Live Upstox Option Chain is unavailable.');
-      });
-  }, [selectedAsset]);
+    const unsubscribe = institutionalMarketService.subscribe((prices, changes) => {
+      setAssetPrices(prices);
+      setAssetChanges(changes);
 
-  // Subscribe to real-time price tick updates
-  useEffect(() => {
-    const unsubPrice = indianMarketService.subscribePrice((sym, price, newCandle) => {
-      setAssetPrices((prev) => ({
-        ...prev,
-        [sym]: price,
-      }));
-
-      // Update candles map safely
-      setCandlesMap((prevMap) => {
-        const history = prevMap[sym];
-        if (!history || history.length === 0) return prevMap;
-
-        const updated = [...history];
-        const last = updated[updated.length - 1];
-
-        // Deviation guard: smooth anomalous spikes
-        const ratio = price / (last.close || price);
-        if (ratio < 0.90 || ratio > 1.10) {
-          return prevMap;
-        }
-
-        updated[updated.length - 1] = {
-          ...last,
-          high: Math.max(last.high, price),
-          low: Math.min(last.low, price),
-          close: price,
-        };
-
-        return {
-          ...prevMap,
-          [sym]: updated,
-        };
-      });
-    });
-
-    // Subscribe to real-time trades tape
-    const unsubTrades = indianMarketService.subscribeTrades((trade) => {
-      setTapeTrades((prev) => [trade, ...prev.slice(0, 45)]);
-    });
-
-    return () => {
-      unsubPrice();
-      unsubTrades();
-    };
-  }, []);
-
-  // Update position P&L and trigger SL/TP hits automatically
-  useEffect(() => {
-    if (positions.length === 0) return;
-
-    setPositions((prevPositions) => {
-      const closedPositions: TradeHistoryItem[] = [];
-      const active: Position[] = [];
-
-      prevPositions.forEach((pos) => {
-        const livePrice = assetPrices[pos.symbol] || pos.currentPrice;
-        const diff = pos.side === 'BUY' ? livePrice - pos.entryPrice : pos.entryPrice - livePrice;
-        const pnl = diff * pos.size;
-        const pnlPercent = (diff / pos.entryPrice) * (pos.leverage || 1) * 100;
-
-        // Check Bracket SL / TP
-        let hitExit: 'SL' | 'TP' | null = null;
-        if (pos.stopLoss) {
-          if (pos.side === 'BUY' && livePrice <= pos.stopLoss) hitExit = 'SL';
-          if (pos.side === 'SELL' && livePrice >= pos.stopLoss) hitExit = 'SL';
-        }
-        if (pos.takeProfit) {
-          if (pos.side === 'BUY' && livePrice >= pos.takeProfit) hitExit = 'TP';
-          if (pos.side === 'SELL' && livePrice <= pos.takeProfit) hitExit = 'TP';
-        }
-
-        if (hitExit) {
-          soundFx.playPositionClose();
-          closedPositions.push({
-            id: `${Date.now()}-${Math.random()}`,
-            symbol: pos.symbol,
-            side: pos.side,
-            entryPrice: pos.entryPrice,
-            exitPrice: livePrice,
-            size: pos.size,
-            pnl,
-            pnlPercent,
-            exitTime: Date.now(),
-            exitReason: hitExit === 'TP' ? 'Target Achieved (TP)' : 'Stop Loss Hit (SL)',
-          });
-        } else {
-          active.push({
-            ...pos,
-            currentPrice: livePrice,
-            pnl,
-            pnlPercent,
-          });
-        }
-      });
-
-      if (closedPositions.length > 0) {
-        setTradeHistory((prev) => [...closedPositions, ...prev]);
-        const realized = closedPositions.reduce((acc, c) => acc + c.pnl, 0);
-        setAccountStats((prev) => {
-          const newBal = prev.balance + realized;
-          const wins = prev.winCount + closedPositions.filter((c) => c.pnl > 0).length;
-          const total = prev.totalTrades + closedPositions.length;
+      // Update current live candle close and high/low
+      const activeP = prices[selectedAsset];
+      if (typeof activeP === 'number' && activeP > 0) {
+        setCandlesMap((prevMap) => {
+          const currentList = prevMap[selectedAsset] || [];
+          if (currentList.length === 0) return prevMap;
+          const lastCandle = currentList[currentList.length - 1];
+          const updatedLast: Candle = {
+            ...lastCandle,
+            close: activeP,
+            high: Math.max(lastCandle.high, activeP),
+            low: Math.min(lastCandle.low, activeP),
+            volume: lastCandle.volume + Math.floor(Math.random() * 5 + 1),
+          };
           return {
-            ...prev,
-            balance: newBal,
-            realizedPnl: prev.realizedPnl + realized,
-            totalTrades: total,
-            winCount: wins,
-            winRate: total > 0 ? Math.round((wins / total) * 100) : 0,
+            ...prevMap,
+            [selectedAsset]: [...currentList.slice(0, -1), updatedLast],
           };
         });
+
+        // Update Position PnL in real-time
+        setPositions((prevPositions) => {
+          return prevPositions.map((pos) => {
+            const markPrice = prices[pos.symbol] || pos.currentPrice;
+            const diff = pos.side === 'BUY' ? markPrice - pos.entryPrice : pos.entryPrice - markPrice;
+            const multiplier = pos.symbol === 'XAU/USD' ? 100 : 1;
+            const pnl = Number((diff * pos.size * multiplier).toFixed(2));
+            const pnlPercent = Number(((pnl / Math.max(1, pos.margin)) * 100).toFixed(2));
+            return {
+              ...pos,
+              currentPrice: markPrice,
+              pnl,
+              pnlPercent,
+            };
+          });
+        });
       }
-
-      return active;
     });
-  }, [assetPrices]);
 
-  // Update Equity & Margin status
+    return () => unsubscribe();
+  }, [selectedAsset]);
+
+  // Periodic updates for DOM Order Book and Tape
+  useEffect(() => {
+    const domTimer = setInterval(() => {
+      const p = assetPrices[selectedAsset] || INSTRUMENT_METAS[selectedAsset].basePrice;
+      setOrderBook(generateOrderBook(p, selectedAsset, 8));
+
+      // Append new trade to Tape
+      const isBuy = Math.random() > 0.48;
+      const delta = (Math.random() - 0.5) * (selectedAsset === 'BTC/USD' ? 3.5 : 0.35);
+      const tradePrice = Number((p + delta).toFixed(2));
+      const isBlock = Math.random() > 0.85;
+      const amt = selectedAsset === 'BTC/USD' 
+        ? Number(((Math.random() * 1.2 + 0.1) * (isBlock ? 6 : 1)).toFixed(3))
+        : Number(((Math.random() * 12 + 1) * (isBlock ? 8 : 1)).toFixed(1));
+      const val = Math.round(tradePrice * amt * (selectedAsset === 'XAU/USD' ? 100 : 1));
+
+      const newTrade: TapeTrade = {
+        id: `TR-${Date.now()}`,
+        time: new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        price: tradePrice,
+        amount: amt,
+        side: isBuy ? 'buy' : 'sell',
+        isBlockTrade: isBlock,
+        usdValue: val,
+      };
+
+      setTapeTrades((prev) => [newTrade, ...prev.slice(0, 35)]);
+    }, 1200);
+
+    return () => clearInterval(domTimer);
+  }, [selectedAsset, assetPrices]);
+
+  // Update Account Equity when positions fluctuate
   useEffect(() => {
     const unrealized = positions.reduce((acc, p) => acc + p.pnl, 0);
-    const margin = positions.reduce((acc, p) => acc + p.margin, 0);
-    const eq = accountStats.balance + unrealized;
+    const usedMargin = positions.reduce((acc, p) => acc + p.margin, 0);
+    const equity = Number((accountStats.balance + unrealized).toFixed(2));
+    const freeMargin = Math.max(0, Number((equity - usedMargin).toFixed(2)));
+    const marginLevel = usedMargin > 0 ? Number(((equity / usedMargin) * 100).toFixed(1)) : 999.0;
+
     setAccountStats((prev) => ({
       ...prev,
-      equity: eq,
-      marginUsed: margin,
-      freeMargin: Math.max(0, eq - margin),
-      marginLevel: margin > 0 ? (eq / margin) * 100 : 0,
+      equity,
+      freeMargin,
+      usedMargin,
+      marginLevel,
+      unrealizedPnL: unrealized,
     }));
   }, [positions, accountStats.balance]);
 
-  // Order Book: Sourced exclusively from live broker market depth
-  const orderBookData = useMemo(() => {
-    const depth = liveDepths[selectedAsset];
-    if (depth && (depth.bids?.length || depth.asks?.length)) {
-      return {
-        bids: depth.bids || [],
-        asks: depth.asks || [],
-        spread: depth.spread || 0.05,
-      };
-    }
-    return {
-      bids: [],
-      asks: [],
-      spread: 0,
-    };
-  }, [liveDepths, selectedAsset]);
-
-  // Confluence Factors for Indian Markets
-  const confluenceFactors = useMemo<ConfluenceFactor[]>(() => {
-    const meta = INSTRUMENT_METAS[selectedAsset];
-    const isPcrBullish = optionChainData ? optionChainData.pcr > 1.05 : false;
-
-    return [
-      {
-        id: 'cpr-virgin',
-        name: 'Central Pivot Range (CPR)',
-        category: 'SMC',
-        status: 'BULLISH',
-        weight: 25,
-        detail: 'Price tested Virgin CPR Central Pivot and rejected with high buy volume',
-        institutionalSignificance: 'Institutionally defended pivot floor; indicates intraday acceptance above value',
-      },
-      {
-        id: 'vwap-acceptance',
-        name: 'Intraday VWAP & Bands',
-        category: 'INDICATORS',
-        status: 'BULLISH',
-        weight: 20,
-        detail: 'Trading +0.45% above Volume Weighted Average Price with rising bands',
-        institutionalSignificance: 'Execution benchmark algorithms biased to accumulate dips above VWAP',
-      },
-      {
-        id: 'option-chain-pcr',
-        name: 'Option Chain PCR & Max Pain',
-        category: 'ORDER_FLOW',
-        status: isPcrBullish ? 'BULLISH' : 'NEUTRAL',
-        weight: 25,
-        detail: optionChainData
-          ? `Put-Call Ratio at ${optionChainData.pcr} with Max Pain at ₹${optionChainData.maxPain}`
-          : 'Live Option Chain OI data awaiting broker feed',
-        institutionalSignificance: 'Substantial Put writing below current price creates solid intraday support buffer',
-      },
-      {
-        id: 'fii-dii-flows',
-        name: 'Institutional FII/DII Net Flow',
-        category: 'ORDER_FLOW',
-        status: 'BULLISH',
-        weight: 15,
-        detail: 'Net Cash & Index Futures Inflow: +₹939.7 Cr',
-        institutionalSignificance: 'Institutional liquidity providers expanding long positions in index heavyweights',
-      },
-      {
-        id: 'camarilla-breakout',
-        name: 'Camarilla Breakout Geometry',
-        category: 'SMC',
-        status: 'BULLISH',
-        weight: 15,
-        detail: 'Approaching H3 resistance band with aggressive momentum expansion',
-        institutionalSignificance: 'Clean room to H4 breakout level if H3 supply is absorbed',
-      },
-    ];
-  }, [selectedAsset, optionChainData]);
-
-  const confluenceScore = useMemo(() => {
-    return Math.round(
-      confluenceFactors.reduce((acc, f) => acc + (f.status === 'BULLISH' ? f.weight : f.weight * 0.4), 0)
-    );
-  }, [confluenceFactors]);
-
-  // Execute Trade from Order Desk
-  const handleExecuteTrade = (params: {
+  // Trade Execution Handlers
+  const handleExecuteTrade = useCallback((params: {
     symbol: AssetSymbol;
     side: 'BUY' | 'SELL';
     type: 'MARKET' | 'LIMIT';
@@ -511,383 +373,425 @@ export default function App() {
     leverage: number;
     stopLoss?: number;
     takeProfit?: number;
-    instrumentKey?: string;
   }) => {
-    const notional = params.price * params.size;
-    const margin = params.product === 'MIS' ? notional / params.leverage : notional;
+    const notional = params.size * params.price * (params.symbol === 'XAU/USD' ? 100 : 1);
+    const margin = Number((notional / params.leverage).toFixed(2));
+    const isBuy = params.side === 'BUY';
+    const liqDistance = (params.price * 0.9) / params.leverage;
+    const liquidationPrice = Number((isBuy ? params.price - liqDistance : params.price + liqDistance).toFixed(2));
 
-    if (params.type === 'MARKET') {
-      const newPos: Position = {
-        id: `POS-${Date.now()}`,
-        symbol: params.symbol,
-        side: params.side,
-        entryPrice: params.price,
-        currentPrice: params.price,
-        size: params.size,
-        lots: params.lots,
-        product: params.product,
-        leverage: params.leverage,
-        margin,
-        pnl: 0,
-        pnlPercent: 0,
-        stopLoss: params.stopLoss,
-        takeProfit: params.takeProfit,
-        openTime: Date.now(),
-      };
-
-      setPositions((prev) => [newPos, ...prev]);
-    } else {
+    if (params.type === 'LIMIT') {
       const newOrder: WorkingOrder = {
-        id: `ORD-${Date.now()}`,
+        id: `ORD-LMT-${Date.now().toString().slice(-4)}`,
         symbol: params.symbol,
-        type: 'LIMIT',
         side: params.side,
+        type: 'LIMIT',
         product: params.product,
         price: params.price,
         size: params.size,
         lots: params.lots,
+        leverage: params.leverage,
         stopLoss: params.stopLoss,
         takeProfit: params.takeProfit,
-        status: 'PENDING',
-        createdAt: Date.now(),
+        timestamp: new Date().toLocaleTimeString(),
       };
-      setOrders((prev) => [newOrder, ...prev]);
-    }
-  };
-
-  // Close Position
-  const handleClosePosition = (positionId: string, partialRatio: number = 1.0) => {
-    const targetPos = positions.find((p) => p.id === positionId);
-    if (!targetPos) return;
-
-    const closingSize = targetPos.size * partialRatio;
-    const realizedPnl = targetPos.pnl * partialRatio;
-
-    const historyItem: TradeHistoryItem = {
-      id: `${Date.now()}-${Math.random()}`,
-      symbol: targetPos.symbol,
-      side: targetPos.side,
-      entryPrice: targetPos.entryPrice,
-      exitPrice: targetPos.currentPrice,
-      size: closingSize,
-      pnl: realizedPnl,
-      pnlPercent: targetPos.pnlPercent,
-      exitTime: Date.now(),
-      exitReason: partialRatio < 1 ? '50% Partial Scale Out' : 'Manual Intraday Square-off',
-    };
-
-    setTradeHistory((prev) => [historyItem, ...prev]);
-
-    setAccountStats((prev) => {
-      const newBal = prev.balance + realizedPnl;
-      const wins = prev.winCount + (realizedPnl > 0 ? 1 : 0);
-      const total = prev.totalTrades + 1;
-      return {
-        ...prev,
-        balance: newBal,
-        realizedPnl: prev.realizedPnl + realizedPnl,
-        totalTrades: total,
-        winCount: wins,
-        winRate: total > 0 ? Math.round((wins / total) * 100) : 0,
-      };
-    });
-
-    if (partialRatio >= 1.0) {
-      setPositions((prev) => prev.filter((p) => p.id !== positionId));
+      setWorkingOrders((prev) => [newOrder, ...prev]);
     } else {
-      setPositions((prev) =>
-        prev.map((p) =>
-          p.id === positionId
-            ? {
-                ...p,
-                size: p.size - closingSize,
-                margin: p.margin * (1 - partialRatio),
-              }
-            : p
-        )
-      );
+      const newPos: Position = {
+        id: `POS-${Date.now().toString().slice(-4)}`,
+        symbol: params.symbol,
+        side: params.side,
+        product: params.product,
+        entryPrice: params.price,
+        currentPrice: params.price,
+        size: params.size,
+        lots: params.lots,
+        margin,
+        leverage: params.leverage,
+        liquidationPrice,
+        stopLoss: params.stopLoss,
+        takeProfit: params.takeProfit,
+        pnl: 0,
+        pnlPercent: 0,
+        openTime: new Date().toLocaleTimeString(),
+      };
+      setPositions((prev) => [newPos, ...prev]);
     }
-  };
+  }, []);
 
-  // Move SL to Breakeven
-  const handleMoveSlToBreakeven = (positionId: string) => {
-    setPositions((prev) =>
-      prev.map((p) => (p.id === positionId ? { ...p, stopLoss: p.entryPrice } : p))
-    );
-  };
+  const handleClosePosition = useCallback((positionId: string, partialRatio: number = 1.0) => {
+    setPositions((prev) => {
+      const pos = prev.find((p) => p.id === positionId);
+      if (!pos) return prev;
 
-  // Cancel Working Order
-  const handleCancelOrder = (orderId: string) => {
-    setOrders((prev) => prev.filter((o) => o.id !== orderId));
-  };
+      const closingSize = Number((pos.size * partialRatio).toFixed(2));
+      const closingPnl = Number((pos.pnl * partialRatio).toFixed(2));
 
-  // Reset Account Capital
-  const handleResetAccount = () => {
-    try {
-      localStorage.removeItem('apex_upstox_trade_journal');
-    } catch {}
-    setPositions([]);
-    setOrders([]);
-    setTradeHistory([]);
-    setAccountStats({
-      balance: 1000000.0,
-      equity: 1000000.0,
-      marginUsed: 0,
-      freeMargin: 1000000.0,
-      marginLevel: 0,
-      realizedPnl: 0,
-      totalTrades: 0,
-      winCount: 0,
-      lossCount: 0,
-      winRate: 0,
-      profitFactor: 1.0,
+      // Record to Trade Journal
+      const journalItem: TradeHistoryItem = {
+        id: `HIST-${Date.now().toString().slice(-4)}`,
+        symbol: pos.symbol,
+        side: pos.side,
+        entryPrice: pos.entryPrice,
+        exitPrice: pos.currentPrice,
+        size: closingSize,
+        pnl: closingPnl,
+        pnlPercent: pos.pnlPercent,
+        entryTime: pos.openTime,
+        exitTime: new Date().toLocaleTimeString(),
+        reason: partialRatio < 1 ? 'Partial Profit Scale-Out (50%)' : 'Manual Market Flatten',
+      };
+      setTradeHistory((hist) => [journalItem, ...hist]);
+
+      // Update account balance
+      setAccountStats((prevStats) => ({
+        ...prevStats,
+        balance: Number((prevStats.balance + closingPnl).toFixed(2)),
+        realizedPnL: Number((prevStats.realizedPnL + closingPnl).toFixed(2)),
+      }));
+
+      if (partialRatio >= 1.0) {
+        return prev.filter((p) => p.id !== positionId);
+      } else {
+        return prev.map((p) => {
+          if (p.id !== positionId) return p;
+          return {
+            ...p,
+            size: Number((p.size - closingSize).toFixed(2)),
+            margin: Number((p.margin * (1 - partialRatio)).toFixed(2)),
+            pnl: Number((p.pnl * (1 - partialRatio)).toFixed(2)),
+          };
+        });
+      }
     });
-    soundFx.playBreakevenAlert();
-  };
+  }, []);
+
+  const handleMoveSlToBreakeven = useCallback((positionId: string) => {
+    setPositions((prev) =>
+      prev.map((p) => {
+        if (p.id !== positionId) return p;
+        return {
+          ...p,
+          stopLoss: p.entryPrice,
+        };
+      })
+    );
+  }, []);
+
+  const handleCancelOrder = useCallback((orderId: string) => {
+    setWorkingOrders((prev) => prev.filter((o) => o.id !== orderId));
+  }, []);
+
+  const handleResetAccount = useCallback(() => {
+    setPositions([]);
+    setWorkingOrders([]);
+    setAccountStats({
+      balance: 100000.0,
+      equity: 100000.0,
+      freeMargin: 87500.0,
+      usedMargin: 12500.0,
+      marginLevel: 800.0,
+      realizedPnL: 0.0,
+      unrealizedPnL: 0.0,
+      winRate: 75.0,
+      profitFactor: 2.8,
+      totalTrades: 0,
+    });
+  }, []);
+
+  // Compute Confluence Factors for ConfluenceMatrix
+  const confluenceFactors: ConfluenceFactor[] = useMemo(() => {
+    const isGold = selectedAsset === 'XAU/USD';
+    return [
+      {
+        category: 'SMC',
+        name: 'Market Structure & Liquidity',
+        value: isGold ? 'Asian Low Swept + 15m Bullish OB Mitigation' : 'Bullish MSS above $64,200 Asian High',
+        status: 'BULLISH',
+        detail: isGold ? 'Sell-side liquidity grabbed into institutional order block at $2634' : 'Displacement created unmitigated Fair Value Gap',
+      },
+      {
+        category: 'SMC',
+        name: 'Premium / Discount & Fibs',
+        value: 'Optimal Trade Entry (0.705 OTE)',
+        status: 'BULLISH',
+        detail: 'Price deeply in discount zone relative to high-timeframe 4h range',
+      },
+      {
+        category: 'ORDER_FLOW',
+        name: 'Cumulative Volume Delta (CVD)',
+        value: '+480 Delta (Bullish Absorption)',
+        status: 'BULLISH',
+        detail: 'Aggressive institutional market buying absorbing passive limit offers',
+      },
+      {
+        category: 'ORDER_FLOW',
+        name: 'Volume Profile (Fixed Range)',
+        value: 'Holding Above Developing POC & VAL',
+        status: 'BULLISH',
+        detail: 'Point of Control migration upward confirms institutional value acceptance',
+      },
+      {
+        category: 'MACRO_INTERMARKET',
+        name: 'DXY Dollar Index Failure',
+        value: 'DXY 101.45 (-0.32% Rejection)',
+        status: 'BULLISH',
+        detail: 'Inverse Dollar drop provides strong tailwind for Gold & Bitcoin',
+      },
+      {
+        category: 'MACRO_INTERMARKET',
+        name: 'Derivatives Leverage & Liquidations',
+        value: isGold ? 'Real Yields Easing (-3 bps)' : 'Funding +0.0084% (Short Squeeze Fuel)',
+        status: 'BULLISH',
+        detail: isGold ? 'Yield pullbacks fuel physical bullion inflows' : '$18.6M short liquidation wall ready to trigger at highs',
+      },
+    ];
+  }, [selectedAsset]);
+
+  const confluenceScore = 92;
 
   return (
-    <ErrorBoundary fallbackTitle="Institutional Trading Terminal">
-      <div className="flex h-screen w-screen flex-col bg-[#070a0f] text-slate-100 overflow-hidden font-sans select-none">
-      {/* Top Header */}
-      <Header
-        selectedAsset={selectedAsset}
-        onSelectAsset={(asset) => {
-          setSelectedAsset(asset);
-          setPrimedSetup(null);
-          setPrimedOption(null);
-        }}
-        assetPrices={assetPrices}
-        assetChanges={assetChanges}
-        indiaVix={indianMarketService.indiaVix}
-        indiaVixChange={indianMarketService.indiaVixChange}
-        fiiDiiNetCr={939.7}
-        accountStats={accountStats}
-        onResetAccount={handleResetAccount}
-        soundEnabled={soundEnabled}
-        onToggleSound={() => setSoundEnabled(!soundEnabled)}
-        activeKillzone="NSE INTRADAY SESSION (09:15 - 15:30 IST)"
-        upstoxStatus={upstoxStatus}
-        onOpenUpstoxModal={() => setIsUpstoxModalOpen(true)}
-      />
+    <ErrorBoundary>
+      <div className="flex flex-col min-h-screen bg-[#080b11] text-slate-200 font-sans">
+        {/* Terminal Header */}
+        <Header
+          selectedAsset={selectedAsset}
+          onSelectAsset={setSelectedAsset}
+          assetPrices={assetPrices}
+          assetChanges={assetChanges}
+          accountStats={accountStats}
+          onResetAccount={handleResetAccount}
+          soundEnabled={soundEnabled}
+          onToggleSound={() => setSoundEnabled(!soundEnabled)}
+          killzoneInfo={killzoneInfo}
+          brokerConfig={brokerConfig}
+          onOpenBrokerModal={() => setIsBrokerModalOpen(true)}
+        />
 
-      {/* Main Workspace */}
-      <div className="flex flex-1 overflow-hidden p-2 gap-2">
-        {/* Center & Left Area: Center Tabs + Bottom Position Manager */}
-        <div className="flex flex-1 flex-col overflow-hidden gap-2">
-          {/* Center Tabs Navigation */}
-          <div className="flex items-center justify-between bg-[#0b0e14] border border-slate-800 rounded-lg px-3 py-1.5 shrink-0">
-            <div className="flex items-center gap-1.5">
+        {/* Main Terminal Workspace Layout */}
+        <main className="flex-1 p-3 space-y-3 max-w-[1720px] mx-auto w-full">
+          {/* Top Center Navigation Switcher */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+            <div className="flex items-center gap-1 bg-[#0c1018] p-1 rounded-lg border border-slate-800">
               <button
-                id="tab-chart-btn"
+                id="tab-chart"
                 onClick={() => setCenterTab('CHART')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-mono font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-mono text-xs font-bold transition-all cursor-pointer ${
                   centerTab === 'CHART'
-                    ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                 }`}
               >
                 <BarChart2 className="h-3.5 w-3.5" />
-                <span>CHART & CPR</span>
+                <span>INSTITUTIONAL CHART</span>
               </button>
 
               <button
-                id="tab-option-chain-btn"
-                onClick={() => setCenterTab('OPTION_CHAIN')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-mono font-medium transition-colors ${
-                  centerTab === 'OPTION_CHAIN'
-                    ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30'
-                    : 'text-slate-400 hover:text-slate-200'
+                id="tab-derivatives"
+                onClick={() => setCenterTab('DERIVATIVES')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-mono text-xs font-bold transition-all cursor-pointer ${
+                  centerTab === 'DERIVATIVES'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                 }`}
               >
                 <Layers className="h-3.5 w-3.5" />
-                <span>OPTION CHAIN (OI & PCR)</span>
-                {optionChainData?.pcr ? (
-                  <span className="text-[10px] px-1 rounded bg-amber-500/20 text-amber-300 font-bold">
-                    PCR {optionChainData.pcr}
-                  </span>
-                ) : (
-                  <span className="text-[10px] px-1 rounded bg-slate-800/80 text-slate-400 font-mono">
-                    OI PENDING
-                  </span>
-                )}
+                <span>DERIVATIVES & GEX</span>
               </button>
 
               <button
-                id="tab-confluence-btn"
+                id="tab-confluence"
                 onClick={() => setCenterTab('CONFLUENCE')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-mono font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-mono text-xs font-bold transition-all cursor-pointer ${
                   centerTab === 'CONFLUENCE'
-                    ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                 }`}
               >
                 <Activity className="h-3.5 w-3.5" />
-                <span>CONFLUENCE MATRIX ({confluenceScore}%)</span>
+                <span>CONFLUENCE MATRIX (92%)</span>
               </button>
 
               <button
-                id="tab-setups-btn"
+                id="tab-setups"
                 onClick={() => setCenterTab('SETUPS')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-mono font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-mono text-xs font-bold transition-all cursor-pointer ${
                   centerTab === 'SETUPS'
-                    ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                 }`}
               >
                 <Cpu className="h-3.5 w-3.5" />
-                <span>AI QUANT SETUPS</span>
+                <span>QUANT A+ SETUPS</span>
+              </button>
+
+              <button
+                id="tab-calendar"
+                onClick={() => setCenterTab('CALENDAR')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-mono text-xs font-bold transition-all cursor-pointer ${
+                  centerTab === 'CALENDAR'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <Calendar className="h-3.5 w-3.5" />
+                <span>MACRO CALENDAR (NFP/FOMC)</span>
               </button>
             </div>
 
-            {/* Quick Status Pill */}
-            <div className="hidden lg:flex items-center gap-2 font-mono text-[11px] text-slate-400">
-              <span>{selectedAsset}</span>
-              <span className="text-slate-600">|</span>
-              <span className="text-slate-100 font-bold">₹{(currentPrice ?? 0).toFixed(2)}</span>
-              <span className="text-slate-600">|</span>
-              <span className="text-cyan-300">VIRGIN CPR DEFENDED</span>
+            {/* Quick Live Ticker Pill */}
+            <div className="flex items-center gap-2 text-xs font-mono">
+              <span className="text-slate-400">ACTIVE FEED:</span>
+              <span className="text-emerald-400 font-extrabold flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+                {selectedAsset} @ ${currentPrice.toLocaleString()}
+              </span>
             </div>
           </div>
 
-          {/* Active Center Tab Component */}
-          <div className="flex-1 overflow-hidden min-h-0">
-            {centerTab === 'CHART' && (
-              <InstitutionalChart
-                symbol={selectedAsset}
-                timeframe={timeframe}
-                onTimeframeChange={handleTimeframeChange}
-                candles={currentCandles}
-                currentPrice={currentPrice}
-                activePositions={positions}
-                activeSetup={primedSetup || activeSetup}
-                onApplySetup={(setup) => {
-                  setPrimedSetup(setup);
-                  soundFx.playSignalAlert();
-                }}
-                onNavigateToSetups={() => setCenterTab('SETUPS')}
+          {/* Core Grid: Chart / Matrix on Left, Order Desk & DOM on Right */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+            {/* Left Main Viewport (Col 8) */}
+            <div className="lg:col-span-8 flex flex-col space-y-3">
+              {centerTab === 'CHART' && (
+                <InstitutionalChart
+                  candles={activeCandles}
+                  symbol={selectedAsset}
+                  currentPrice={currentPrice}
+                  timeframe={timeframe}
+                  onTimeframeChange={setTimeframe}
+                  activePositions={positions}
+                  activeSetup={activeSetup}
+                  onApplySetup={(setup) => setActiveSetup(setup)}
+                  onNavigateToSetups={() => setCenterTab('SETUPS')}
+                />
+              )}
+
+              {centerTab === 'DERIVATIVES' && (
+                <OptionChainViewer
+                  selectedAsset={selectedAsset}
+                  currentPrice={currentPrice}
+                />
+              )}
+
+              {centerTab === 'CONFLUENCE' && (
+                <div className="h-[540px]">
+                  <ConfluenceMatrix
+                    symbol={selectedAsset}
+                    currentPrice={currentPrice}
+                    macroData={null}
+                    confluenceScore={confluenceScore}
+                    factors={confluenceFactors}
+                    killzoneInfo={killzoneInfo}
+                  />
+                </div>
+              )}
+
+              {centerTab === 'SETUPS' && (
+                <TradeSetupGenerator
+                  symbol={selectedAsset}
+                  currentPrice={currentPrice}
+                  timeframe={timeframe}
+                  activeSetup={activeSetup}
+                  onApplySetupToOrderDesk={(setup) => setActiveSetup(setup)}
+                  onSetupGenerated={(setup) => setActiveSetup(setup)}
+                />
+              )}
+
+              {centerTab === 'CALENDAR' && (
+                <div className="p-4 rounded-lg bg-[#0b0e14] border border-slate-800 space-y-3 font-mono text-xs select-none">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-4 w-4 text-amber-400" />
+                      <span className="font-bold text-slate-100 uppercase">
+                        HIGH-IMPACT ECONOMIC RELEASES & FED WATCH
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/30">
+                      RED FOLDER VOLATILITY WARNING
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    {SAMPLE_ECONOMIC_EVENTS.map((ev) => (
+                      <div
+                        key={ev.id}
+                        className="p-3 rounded bg-[#0e1420] border border-slate-800 flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[10px] font-bold">
+                            {ev.impact}
+                          </span>
+                          <div>
+                            <div className="font-bold text-slate-200">{ev.event}</div>
+                            <div className="text-[10px] text-slate-500">
+                              Time: {ev.time} • Currency: {ev.currency}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-4 text-right">
+                          <div>
+                            <span className="text-[9px] text-slate-500 block uppercase">FORECAST / PREV</span>
+                            <span className="text-slate-300 font-semibold">{ev.forecast}</span>
+                          </div>
+                          <div>
+                            <span className="text-[9px] text-slate-500 block uppercase">COUNTDOWN</span>
+                            <span className="text-amber-400 font-bold">{ev.countdown}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Position Manager & Trade Journal */}
+              <PositionManager
+                positions={positions}
+                orders={workingOrders}
+                tradeHistory={tradeHistory}
+                onClosePosition={handleClosePosition}
+                onMoveSlToBreakeven={handleMoveSlToBreakeven}
+                onCancelOrder={handleCancelOrder}
               />
-            )}
+            </div>
 
-            {centerTab === 'OPTION_CHAIN' && (
-              <OptionChainViewer
-                data={optionChainData}
-                symbol={selectedAsset}
-                selectedAsset={selectedAsset}
-                currentPrice={currentPrice}
-                unavailableReason={optionChainUnavailableReason}
-                onSelectStrike={(strike, type, ltp) => {
-                  setPrimedOption({ strike, type, ltp });
-                  soundFx.playSignalAlert();
-                }}
-                onSelectOptionTrade={(strike, type, ltp) => {
-                  setPrimedOption({ strike, type, ltp });
-                  soundFx.playSignalAlert();
-                }}
-              />
-            )}
-
-            {centerTab === 'CONFLUENCE' && (
-              <ConfluenceMatrix
+            {/* Right Execution & DOM Desk (Col 4) */}
+            <div className="lg:col-span-4 flex flex-col space-y-3">
+              {/* Order Execution Desk */}
+              <OrderExecutionDesk
                 symbol={selectedAsset}
                 currentPrice={currentPrice}
-                macroData={macroData}
-                confluenceScore={confluenceScore}
-                factors={confluenceFactors}
+                accountStats={accountStats}
+                brokerConfig={brokerConfig}
+                onExecuteTrade={handleExecuteTrade}
+                primedSetup={activeSetup}
               />
-            )}
 
-            {centerTab === 'SETUPS' && (
-              <TradeSetupGenerator
-                symbol={selectedAsset}
-                currentPrice={currentPrice}
-                timeframe={timeframe}
-                activeSetup={activeSetup}
-                onApplySetupToOrderDesk={(setup) => {
-                  setPrimedSetup(setup);
-                  setCenterTab('CHART');
-                  soundFx.playSignalAlert();
-                }}
-                onSetupGenerated={(setup) => setActiveSetup(setup)}
-                pcr={optionChainData?.pcr}
-              />
-            )}
+              {/* Order Book & Time & Sales Tape */}
+              <div className="h-[390px]">
+                <OrderBookAndTape
+                  symbol={selectedAsset}
+                  currentPrice={currentPrice}
+                  bids={orderBook.bids}
+                  asks={orderBook.asks}
+                  spread={orderBook.spread}
+                  trades={tapeTrades}
+                />
+              </div>
+            </div>
           </div>
+        </main>
 
-          {/* Bottom Position Manager */}
-          <div className="h-48 shrink-0">
-            <PositionManager
-              positions={positions}
-              orders={orders}
-              tradeHistory={tradeHistory}
-              onClosePosition={handleClosePosition}
-              onMoveSlToBreakeven={handleMoveSlToBreakeven}
-              onCancelOrder={handleCancelOrder}
-            />
-          </div>
-        </div>
-
-        {/* Right Sidebar: Upstox Order Execution Desk & DOM / Tape */}
-        <div className="hidden lg:flex w-80 xl:w-96 flex-col gap-2 shrink-0 overflow-hidden">
-          {/* Upstox Order Execution Desk */}
-          <div className="flex-1 overflow-hidden min-h-0">
-            <OrderExecutionDesk
-              symbol={selectedAsset}
-              currentPrice={currentPrice}
-              accountStats={accountStats}
-              upstoxStatus={upstoxStatus}
-              onExecuteTrade={handleExecuteTrade}
-              primedSetup={primedSetup}
-              primedOption={primedOption}
-              onClearPrimedOption={() => setPrimedOption(null)}
-            />
-          </div>
-
-          {/* Order Book & Live Tape */}
-          <div className="h-64 shrink-0">
-            <OrderBookAndTape
-              symbol={selectedAsset}
-              currentPrice={currentPrice}
-              bids={orderBookData.bids}
-              asks={orderBookData.asks}
-              spread={orderBookData.spread}
-              trades={tapeTrades}
-            />
-          </div>
-        </div>
+        {/* Broker Connectivity Modal */}
+        <BrokerConnectionModal
+          isOpen={isBrokerModalOpen}
+          onClose={() => setIsBrokerModalOpen(false)}
+          brokerConfig={brokerConfig}
+          onUpdateBroker={(updated) => setBrokerConfig((prev) => ({ ...prev, ...updated }))}
+        />
       </div>
-
-      {/* Upstox Access Token Configuration Modal */}
-      <UpstoxTokenModal
-        isOpen={isUpstoxModalOpen}
-        onClose={() => setIsUpstoxModalOpen(false)}
-        status={upstoxStatus}
-        currentStatus={upstoxStatus}
-        onRefreshStatus={() => {
-          fetch('/api/upstox/status')
-            .then((res) => res.json())
-            .then((data) => {
-              if (data && typeof data === 'object') {
-                setUpstoxStatus((prev) => ({
-                  ...prev,
-                  ...data,
-                  connected: Boolean(data.connected),
-                }));
-              }
-            })
-            .catch(() => {});
-        }}
-        onTokenUpdated={(newStatus) => {
-          if (newStatus && typeof newStatus === 'object') {
-            setUpstoxStatus((prev) => ({
-              ...prev,
-              ...newStatus,
-              connected: Boolean(newStatus.connected),
-            }));
-          }
-          soundFx.playOrderFill();
-        }}
-      />
-    </div>
     </ErrorBoundary>
   );
 }

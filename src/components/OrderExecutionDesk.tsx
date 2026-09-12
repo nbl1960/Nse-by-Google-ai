@@ -5,7 +5,7 @@ import {
   InstitutionalSetup, 
   ProductType, 
   INSTRUMENT_METAS,
-  UpstoxBrokerStatus 
+  BrokerConnection 
 } from '../types/trading';
 import { 
   ShieldCheck, 
@@ -16,8 +16,10 @@ import {
   Lock,
   Zap,
   Layers,
-  Key,
-  CheckCircle2
+  Radio,
+  CheckCircle2,
+  AlertTriangle,
+  Scale
 } from 'lucide-react';
 import { soundFx } from '../utils/audio';
 
@@ -25,7 +27,7 @@ interface OrderExecutionDeskProps {
   symbol: AssetSymbol;
   currentPrice?: number;
   accountStats: AccountStats;
-  upstoxStatus?: UpstoxBrokerStatus;
+  brokerConfig: BrokerConnection;
   onExecuteTrade: (params: {
     symbol: AssetSymbol;
     side: 'BUY' | 'SELL';
@@ -37,14 +39,11 @@ interface OrderExecutionDeskProps {
     leverage: number;
     stopLoss?: number;
     takeProfit?: number;
-    instrumentKey?: string;
   }) => void;
   primedSetup: InstitutionalSetup | null;
-  primedOption?: { strike: number; type: 'CE' | 'PE'; ltp: number } | null;
-  onClearPrimedOption?: () => void;
 }
 
-const safeFixed = (val: number | undefined | null, digits: number = 1, fallback: string = '0.0'): string => {
+const safeFixed = (val: number | undefined | null, digits: number = 2, fallback: string = '0.00'): string => {
   if (typeof val !== 'number' || isNaN(val)) return fallback;
   return val.toFixed(digits);
 };
@@ -53,431 +52,453 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
   symbol,
   currentPrice: rawCurrentPrice,
   accountStats,
-  upstoxStatus = {
-    connected: true,
-    mode: 'LIVE',
-    hasToken: true,
-    feedLatencyMs: 4,
-    marketOpen: true,
-  },
+  brokerConfig,
   onExecuteTrade,
   primedSetup,
-  primedOption,
-  onClearPrimedOption,
 }) => {
+  const meta = INSTRUMENT_METAS[symbol] || INSTRUMENT_METAS['BTC/USD'];
   const currentPrice = typeof rawCurrentPrice === 'number' && !isNaN(rawCurrentPrice) && rawCurrentPrice > 0
     ? rawCurrentPrice
-    : (INSTRUMENT_METAS[symbol]?.basePrice || 24000);
-  const isUpstoxConnected = Boolean(upstoxStatus?.connected && upstoxStatus?.mode === 'LIVE');
-  const meta = INSTRUMENT_METAS[symbol] || INSTRUMENT_METAS['NIFTY 50'];
+    : (meta?.basePrice || 64850);
 
-  // Order settings
+  // Order Parameters
   const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET');
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY');
-  const [product, setProduct] = useState<ProductType>('MIS');
+  const [product, setProduct] = useState<ProductType>('PERPETUAL_SWAP');
   const [limitPrice, setLimitPrice] = useState<number>(currentPrice);
-  const [lots, setLots] = useState<number>(meta.isIndex ? 2 : 1);
-  const [riskPercent, setRiskPercent] = useState<number>(1.0); // 1% risk rule
+  const [leverage, setLeverage] = useState<number>(10);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [orderSuccessMsg, setOrderSuccessMsg] = useState<string | null>(null);
 
-  // Default leverage based on product
-  const leverage = product === 'MIS' ? (meta.isIndex ? 10 : 5) : 1;
+  // Default contract size
+  const defaultSize = symbol === 'BTC/USD' ? 0.5 : 1.0;
+  const [size, setSize] = useState<number>(defaultSize);
 
-  // Bracket Order (SL & TP)
-  const defaultSlPoints = meta.isIndex ? (symbol === 'BANKNIFTY' ? 80 : 35) : Math.max(5, Number((currentPrice * 0.008).toFixed(1)));
-  const defaultTpPoints = defaultSlPoints * 2.2;
+  // Bracket Order (Stop Loss & Take Profit)
+  const isGold = symbol === 'XAU/USD';
+  const defaultSlOffset = isGold ? 4.50 : 350;
+  const defaultTpOffset = defaultSlOffset * 2.5;
 
   const [enableSl, setEnableSl] = useState<boolean>(true);
   const [stopLossPrice, setStopLossPrice] = useState<number>(
-    Number((currentPrice - defaultSlPoints).toFixed(1))
+    Number((currentPrice - defaultSlOffset).toFixed(2))
   );
 
   const [enableTp, setEnableTp] = useState<boolean>(true);
   const [takeProfitPrice, setTakeProfitPrice] = useState<number>(
-    Number((currentPrice + defaultTpPoints).toFixed(1))
+    Number((currentPrice + defaultTpOffset).toFixed(2))
   );
 
-  // Total Quantity calculation
-  const totalQuantity = meta.isIndex ? lots * meta.lotSize : lots * (meta.lotSize || 1);
-
-  // Update limit price default when symbol changes
+  // Synchronize when asset changes
   useEffect(() => {
     setLimitPrice(currentPrice);
-    if (!primedSetup) {
-      if (side === 'BUY') {
-        setStopLossPrice(Number((currentPrice - defaultSlPoints).toFixed(1)));
-        setTakeProfitPrice(Number((currentPrice + defaultTpPoints).toFixed(1)));
-      } else {
-        setStopLossPrice(Number((currentPrice + defaultSlPoints).toFixed(1)));
-        setTakeProfitPrice(Number((currentPrice - defaultTpPoints).toFixed(1)));
-      }
-    }
+    const newSize = symbol === 'BTC/USD' ? 0.5 : 1.0;
+    setSize(newSize);
+    const slOff = symbol === 'XAU/USD' ? 4.50 : 350;
+    setStopLossPrice(Number((currentPrice - slOff).toFixed(2)));
+    setTakeProfitPrice(Number((currentPrice + slOff * 2.5).toFixed(2)));
   }, [symbol]);
 
-  // When a primed setup is loaded from the quant generator
+  // Synchronize with Primed Setup from Setup Generator
   useEffect(() => {
     if (primedSetup && primedSetup.asset === symbol) {
-      setSide(primedSetup.signal.includes('BUY') ? 'BUY' : 'SELL');
+      const isBuy = primedSetup.signal.includes('BUY');
+      setSide(isBuy ? 'BUY' : 'SELL');
+      setOrderType('LIMIT');
       setLimitPrice(primedSetup.entryPrice);
       setStopLossPrice(primedSetup.stopLoss);
       setTakeProfitPrice(primedSetup.takeProfit2);
       setEnableSl(true);
       setEnableTp(true);
-
-      // Auto calculate lots based on exact Stop Loss distance & 1% capital rule
-      const riskInr = (accountStats.balance * riskPercent) / 100;
-      const slDist = Math.abs(primedSetup.entryPrice - primedSetup.stopLoss);
-      if (slDist > 0) {
-        const calculatedQty = riskInr / slDist;
-        const calculatedLots = Math.max(1, Math.round(calculatedQty / meta.lotSize));
-        setLots(calculatedLots);
+      if (primedSetup.recommendedSize) {
+        setSize(primedSetup.recommendedSize);
       }
     }
-  }, [primedSetup]);
+  }, [primedSetup, symbol]);
 
-  // Handle Option selection from Option Chain
-  useEffect(() => {
-    if (primedOption) {
-      setSide('BUY');
-      setLimitPrice(primedOption.ltp);
-      setStopLossPrice(Number((primedOption.ltp * 0.7).toFixed(1))); // 30% SL on option
-      setTakeProfitPrice(Number((primedOption.ltp * 1.6).toFixed(1))); // 60% TP on option
-      setProduct('MIS');
+  // Calculate Notional Value, Required Margin, and Potential Risk / Reward
+  const effectivePrice = orderType === 'MARKET' ? currentPrice : limitPrice;
+  const contractMultiplier = symbol === 'XAU/USD' ? 100 : 1; // 1 Lot Gold = 100 oz
+  const notionalValue = size * effectivePrice * contractMultiplier;
+  const requiredMargin = notionalValue / leverage;
+
+  const riskPerUnit = enableSl ? Math.abs(effectivePrice - stopLossPrice) : 0;
+  const rewardPerUnit = enableTp ? Math.abs(takeProfitPrice - effectivePrice) : 0;
+  const totalRiskUsd = riskPerUnit * size * contractMultiplier;
+  const totalRewardUsd = rewardPerUnit * size * contractMultiplier;
+  const calculatedRr = totalRiskUsd > 0 ? (totalRewardUsd / totalRiskUsd).toFixed(2) : '--';
+
+  // Apply Risk % Rule (1% or 2% of equity auto-sizing)
+  const applyRiskSizing = (riskPercent: number) => {
+    const riskBudget = (accountStats.equity * riskPercent) / 100;
+    if (riskPerUnit > 0) {
+      const targetUnits = riskBudget / (riskPerUnit * contractMultiplier);
+      const rounded = symbol === 'BTC/USD' 
+        ? Math.max(0.01, Number(targetUnits.toFixed(2)))
+        : Math.max(0.1, Number(targetUnits.toFixed(1)));
+      setSize(rounded);
+      soundFx.playClick();
     }
-  }, [primedOption]);
+  };
 
-  const effectiveEntry = primedOption ? primedOption.ltp : (orderType === 'MARKET' ? currentPrice : limitPrice);
-  const notionalValue = effectiveEntry * totalQuantity;
-  const marginRequired = product === 'MIS' ? notionalValue / leverage : notionalValue;
-  const slDistance = Math.abs(effectiveEntry - stopLossPrice);
-  const potentialLoss = slDistance * totalQuantity;
-  const tpDistance = Math.abs(takeProfitPrice - effectiveEntry);
-  const potentialProfit = tpDistance * totalQuantity;
-  const rrRatio = potentialLoss > 0 ? (potentialProfit / potentialLoss).toFixed(2) : '0.00';
-
-  const handleSubmitOrder = async (overrideSide?: 'BUY' | 'SELL') => {
-    const activeSide = overrideSide || side;
-    if (overrideSide && overrideSide !== side) {
-      setSide(overrideSide);
+  const handleExecute = () => {
+    if (requiredMargin > accountStats.freeMargin) {
+      soundFx.playWarning();
+      alert(`Insufficient Free Margin. Required: $${safeFixed(requiredMargin, 2)}, Available: $${safeFixed(accountStats.freeMargin, 2)}`);
+      return;
     }
+
     setIsSubmitting(true);
-    setOrderSuccessMsg(null);
-
-    const entry = effectiveEntry;
-
-    // Call upstream execution
-    onExecuteTrade({
-      symbol,
-      side: activeSide,
-      type: orderType,
-      product,
-      price: entry,
-      size: totalQuantity,
-      lots,
-      leverage,
-      stopLoss: enableSl ? stopLossPrice : undefined,
-      takeProfit: enableTp ? takeProfitPrice : undefined,
-      instrumentKey: primedOption
-        ? `${symbol} ${primedOption.strike} ${primedOption.type}`
-        : meta.upstoxKey,
-    });
-
-    // Call Upstox broker proxy if token is active
-    if (upstoxStatus?.hasToken) {
-      try {
-        await fetch('/api/upstox/order/place', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            symbol: meta.upstoxKey,
-            instrument_token: meta.upstoxKey,
-            transaction_type: activeSide,
-            order_type: orderType,
-            product,
-            quantity: totalQuantity,
-            price: orderType === 'LIMIT' ? limitPrice : 0,
-            tag: 'APEX_INTRADAY',
-          }),
-        });
-      } catch (e) {
-        console.warn('Upstox proxy response handled:', e);
-      }
-    }
-
-    soundFx.playOrderFill();
-    setOrderSuccessMsg(`Order placed: ${activeSide} ${lots} Lots (${totalQuantity} Qty) @ ₹${entry.toFixed(1)}`);
-    setIsSubmitting(false);
+    soundFx.playClick();
 
     setTimeout(() => {
-      setOrderSuccessMsg(null);
-    }, 3500);
+      onExecuteTrade({
+        symbol,
+        side,
+        type: orderType,
+        product,
+        price: effectivePrice,
+        size,
+        lots: size,
+        leverage,
+        stopLoss: enableSl ? stopLossPrice : undefined,
+        takeProfit: enableTp ? takeProfitPrice : undefined,
+      });
+
+      setIsSubmitting(false);
+      setOrderSuccessMsg(
+        `Filled ${side} ${size} ${symbol === 'BTC/USD' ? 'BTC' : 'Lots'} @ $${safeFixed(effectivePrice, symbol === 'BTC/USD' ? 1 : 2)}`
+      );
+
+      soundFx.playSuccess();
+
+      setTimeout(() => setOrderSuccessMsg(null), 3500);
+    }, 180);
   };
 
   return (
     <div className="flex flex-col bg-[#0b0e14] border border-slate-800 rounded-lg overflow-hidden select-none">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-slate-800 px-3.5 py-2.5 bg-[#0d121c]">
+      {/* Execution Desk Header */}
+      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5 bg-[#0d121c]">
         <div className="flex items-center gap-2">
-          <Zap className="h-4 w-4 text-cyan-400" />
-          <span className="font-mono font-bold text-xs uppercase tracking-wider text-slate-200">
-            UPSTOX EXECUTION DESK (NSE / BSE)
-          </span>
+          <div className="flex h-6 w-6 items-center justify-center rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+            <Zap className="h-3.5 w-3.5" />
+          </div>
+          <div>
+            <h3 className="text-xs font-mono font-bold text-slate-100 uppercase tracking-wider">
+              DMA ORDER EXECUTION DESK
+            </h3>
+            <div className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5">
+              <span>ROUTE:</span>
+              <span className="text-emerald-400 font-semibold">{brokerConfig.brokerName}</span>
+              <span>•</span>
+              <span className="text-slate-300">0.00% MAKER / 0.02% TAKER</span>
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
-            isUpstoxConnected
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-              : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-          }`}>
-            {isUpstoxConnected ? 'LIVE BROKER ROUTED' : 'SIMULATED PAPER DESK'}
-          </span>
+
+        {/* Live Broker Indicator */}
+        <div className="flex items-center gap-1.5 font-mono text-[10px] bg-slate-900 border border-slate-800 px-2 py-1 rounded">
+          <Radio className="h-2.5 w-2.5 text-emerald-400 animate-ping" />
+          <span className="text-slate-300">LATENCY: {brokerConfig.latencyMs}ms</span>
         </div>
       </div>
 
-      {/* Primed Option Banner if selected */}
-      {primedOption && (
-        <div className="bg-cyan-950/40 border-b border-cyan-500/30 px-3.5 py-2 flex items-center justify-between text-xs font-mono">
-          <div className="flex items-center gap-2">
-            <span className="text-cyan-400 font-bold">DERIVATIVE SELECTED:</span>
-            <span className="text-slate-100 font-bold">
-              {symbol} {primedOption.strike} {primedOption.type}
-            </span>
-            <span className="text-slate-300">LTP: ₹{primedOption.ltp}</span>
-          </div>
-          {onClearPrimedOption && (
-            <button
-              onClick={onClearPrimedOption}
-              className="text-slate-400 hover:text-rose-300 text-[10px]"
-            >
-              Clear Option
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Main Order Settings */}
-      <div className="p-3.5 space-y-3.5 flex-1 overflow-y-auto font-mono text-xs">
-        {/* Product Type (MIS vs CNC vs NRML) */}
-        <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-900 rounded-lg border border-slate-800">
-          {(['MIS', 'NRML', 'CNC'] as ProductType[]).map((p) => (
-            <button
-              key={p}
-              onClick={() => setProduct(p)}
-              className={`py-1 rounded text-center font-bold text-[11px] transition-all ${
-                product === p
-                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {p} {p === 'MIS' ? '(Intraday)' : p === 'NRML' ? '(F&O Carry)' : '(Delivery)'}
-            </button>
-          ))}
-        </div>
-
-        {/* Order Type (MARKET vs LIMIT) */}
+      <div className="p-4 space-y-3.5">
+        {/* Buy / Sell Direct Side Selector */}
         <div className="grid grid-cols-2 gap-2">
           <button
-            onClick={() => setOrderType('MARKET')}
-            className={`py-1.5 rounded font-bold transition-all border ${
-              orderType === 'MARKET'
-                ? 'bg-slate-800 border-cyan-500/40 text-cyan-300'
-                : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+            id="order-side-buy-btn"
+            onClick={() => {
+              setSide('BUY');
+              soundFx.playClick();
+            }}
+            className={`py-2 rounded-lg font-mono font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              side === 'BUY'
+                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                : 'bg-[#0f1420] text-slate-400 border border-slate-800 hover:bg-slate-800 hover:text-emerald-300'
             }`}
           >
-            MARKET (BBO)
+            <ArrowUpRight className="h-4 w-4" />
+            <span>BUY / LONG</span>
           </button>
+
           <button
-            onClick={() => setOrderType('LIMIT')}
-            className={`py-1.5 rounded font-bold transition-all border ${
-              orderType === 'LIMIT'
-                ? 'bg-slate-800 border-cyan-500/40 text-cyan-300'
-                : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200'
+            id="order-side-sell-btn"
+            onClick={() => {
+              setSide('SELL');
+              soundFx.playClick();
+            }}
+            className={`py-2 rounded-lg font-mono font-extrabold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              side === 'SELL'
+                ? 'bg-rose-500 text-slate-950 shadow-md shadow-rose-500/20'
+                : 'bg-[#0f1420] text-slate-400 border border-slate-800 hover:bg-slate-800 hover:text-rose-300'
             }`}
           >
-            LIMIT
+            <ArrowDownRight className="h-4 w-4" />
+            <span>SELL / SHORT</span>
           </button>
         </div>
 
-        {/* Limit Price Input if LIMIT selected */}
-        {orderType === 'LIMIT' && (
+        {/* Product Contract Type & Order Type */}
+        <div className="grid grid-cols-2 gap-2 text-xs font-mono">
           <div>
-            <label className="block text-[11px] text-slate-400 mb-1">LIMIT PRICE (₹)</label>
-            <input
-              type="number"
-              step="0.05"
-              value={limitPrice}
-              onChange={(e) => setLimitPrice(Number(e.target.value))}
-              className="w-full rounded bg-slate-900 border border-slate-700 px-3 py-1.5 font-mono text-slate-100 focus:border-cyan-500 focus:outline-none"
-            />
-          </div>
-        )}
-
-        {/* Lots & Quantity Inputs */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-3 space-y-2">
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="text-slate-400">LOT SIZE: {meta.lotSize} Qty</span>
-            <span className="text-cyan-300 font-bold">TOTAL QTY: {totalQuantity}</span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <div className="flex-1">
-              <label className="block text-[10px] text-slate-500 uppercase mb-1">NUMBER OF LOTS</label>
-              <div className="flex items-center gap-1.5">
+            <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">
+              CONTRACT TYPE
+            </label>
+            <div className="flex rounded-md bg-[#0f1420] border border-slate-800 p-0.5">
+              {(['PERPETUAL_SWAP', 'ISOLATED_MARGIN', 'PHYSICAL_SPOT'] as ProductType[]).map((p) => (
                 <button
-                  onClick={() => setLots((prev) => Math.max(1, prev - 1))}
-                  className="px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
-                >
-                  -
-                </button>
-                <input
-                  type="number"
-                  min="1"
-                  max="100"
-                  value={lots}
-                  onChange={(e) => setLots(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full text-center rounded bg-slate-950 border border-slate-700 py-1 font-bold text-slate-100 focus:border-cyan-500 focus:outline-none"
-                />
-                <button
-                  onClick={() => setLots((prev) => prev + 1)}
-                  className="px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            {/* Quick Multiplier Pills */}
-            <div className="flex items-center gap-1 self-end pb-0.5">
-              {[1, 2, 5, 10].map((l) => (
-                <button
-                  key={l}
-                  onClick={() => setLots(l)}
-                  className={`px-2 py-1 rounded text-[10px] border transition-all ${
-                    lots === l
-                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-                      : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                  key={p}
+                  onClick={() => {
+                    setProduct(p);
+                    soundFx.playClick();
+                  }}
+                  className={`flex-1 py-1 text-[10px] font-bold rounded transition-all ${
+                    product === p
+                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                      : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  {l}L
+                  {p === 'PERPETUAL_SWAP' ? 'PERP SWAP' : p === 'ISOLATED_MARGIN' ? 'ISOLATED' : 'SPOT'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">
+              EXECUTION TYPE
+            </label>
+            <div className="flex rounded-md bg-[#0f1420] border border-slate-800 p-0.5">
+              {(['MARKET', 'LIMIT'] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => {
+                    setOrderType(t);
+                    soundFx.playClick();
+                  }}
+                  className={`flex-1 py-1 text-[10px] font-bold rounded transition-all ${
+                    orderType === t
+                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {t}
                 </button>
               ))}
             </div>
           </div>
         </div>
 
-        {/* Institutional Risk Calculator & Bracket Orders */}
-        <div className="space-y-2 pt-1 border-t border-slate-800">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
-              <ShieldCheck className="h-3.5 w-3.5 text-cyan-400" />
-              BRACKET RISK MANAGEMENT (SL / TP)
+        {/* Leverage & Limit Price Input */}
+        <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+          {orderType === 'LIMIT' ? (
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">
+                LIMIT PRICE ($)
+              </label>
+              <input
+                type="number"
+                step={meta.tickSize}
+                value={limitPrice}
+                onChange={(e) => setLimitPrice(parseFloat(e.target.value) || currentPrice)}
+                className="w-full rounded bg-[#0f1420] border border-slate-800 px-3 py-1.5 text-xs text-slate-100 font-bold focus:border-cyan-500 focus:outline-none"
+              />
+            </div>
+          ) : (
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-semibold mb-1 block">
+                BEST MARKET PRICE ($)
+              </label>
+              <div className="w-full rounded bg-[#0f1420] border border-slate-800 px-3 py-1.5 text-xs text-emerald-400 font-bold flex items-center justify-between">
+                <span>${safeFixed(currentPrice, symbol === 'BTC/USD' ? 1 : 2)}</span>
+                <span className="text-[9px] text-slate-500 font-normal">SLIPPAGE &lt; 0.01%</span>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[10px] text-slate-400 uppercase font-semibold">
+                LEVERAGE
+              </label>
+              <span className="text-[10px] text-amber-400 font-bold">{leverage}x</span>
+            </div>
+            <div className="flex items-center gap-1">
+              {[1, 5, 10, 20, 50].map((lev) => (
+                <button
+                  key={lev}
+                  onClick={() => {
+                    setLeverage(lev);
+                    soundFx.playClick();
+                  }}
+                  className={`flex-1 py-1 rounded text-[10px] font-bold border transition-all ${
+                    leverage === lev
+                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                      : 'bg-[#0f1420] text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+                >
+                  {lev}x
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Position Sizing & Auto Risk Sizing */}
+        <div>
+          <div className="flex items-center justify-between mb-1 text-[10px] font-mono">
+            <span className="text-slate-400 uppercase font-semibold">
+              CONTRACT SIZE ({symbol === 'BTC/USD' ? 'BTC' : 'LOTS (100 OZ)'})
             </span>
-            <span className="text-[10px] text-slate-400">R:R {rrRatio}</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-500">RISK SIZING:</span>
+              <button
+                onClick={() => applyRiskSizing(0.5)}
+                className="text-cyan-400 hover:text-cyan-300 underline font-semibold"
+              >
+                0.5%
+              </button>
+              <button
+                onClick={() => applyRiskSizing(1.0)}
+                className="text-cyan-400 hover:text-cyan-300 underline font-semibold"
+              >
+                1.0%
+              </button>
+              <button
+                onClick={() => applyRiskSizing(2.0)}
+                className="text-cyan-400 hover:text-cyan-300 underline font-semibold"
+              >
+                2.0%
+              </button>
+            </div>
           </div>
 
-          {/* Stop Loss Toggle and Price */}
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="enable-sl"
-              checked={enableSl}
-              onChange={(e) => setEnableSl(e.target.checked)}
-              className="rounded border-slate-700 text-cyan-500 focus:ring-0"
-            />
-            <label htmlFor="enable-sl" className="text-slate-400 text-[11px] w-24">
-              STOP LOSS (₹)
+          <div className="grid grid-cols-4 gap-1.5 mb-1.5 font-mono">
+            {(symbol === 'BTC/USD' ? [0.1, 0.25, 0.5, 1.0] : [0.5, 1.0, 2.0, 5.0]).map((preset) => (
+              <button
+                key={preset}
+                onClick={() => {
+                  setSize(preset);
+                  soundFx.playClick();
+                }}
+                className={`py-1 rounded text-[10px] font-bold border transition-all ${
+                  size === preset
+                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                    : 'bg-[#0f1420] text-slate-400 border-slate-800 hover:text-slate-200'
+                }`}
+              >
+                {preset} {symbol === 'BTC/USD' ? 'BTC' : 'LOT'}
+              </button>
+            ))}
+          </div>
+
+          <input
+            type="number"
+            step={symbol === 'BTC/USD' ? 0.01 : 0.1}
+            min={symbol === 'BTC/USD' ? 0.01 : 0.1}
+            value={size}
+            onChange={(e) => setSize(Math.max(0.01, parseFloat(e.target.value) || 0.1))}
+            className="w-full rounded bg-[#0f1420] border border-slate-800 px-3 py-1.5 text-xs text-slate-100 font-bold font-mono focus:border-cyan-500 focus:outline-none"
+          />
+        </div>
+
+        {/* Bracket Orders (Stop Loss & Take Profit) */}
+        <div className="p-3 rounded-lg bg-[#090d14] border border-slate-800/80 space-y-2.5 font-mono text-xs">
+          {/* SL Row */}
+          <div className="flex items-center justify-between gap-2">
+            <label className="flex items-center gap-1.5 text-rose-400 font-semibold cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enableSl}
+                onChange={(e) => setEnableSl(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-rose-500 focus:ring-0"
+              />
+              <span>STOP LOSS (SL)</span>
             </label>
             <input
               type="number"
-              step="0.1"
               disabled={!enableSl}
+              step={meta.tickSize}
               value={stopLossPrice}
-              onChange={(e) => setStopLossPrice(Number(e.target.value))}
-              className="flex-1 rounded bg-slate-900 border border-slate-700 px-2.5 py-1 text-rose-300 disabled:opacity-40 focus:border-rose-500 focus:outline-none"
+              onChange={(e) => setStopLossPrice(parseFloat(e.target.value) || 0)}
+              className="w-28 rounded bg-[#0f1420] border border-slate-800 px-2 py-1 text-right text-xs text-rose-300 font-bold disabled:opacity-40"
             />
           </div>
 
-          {/* Take Profit Toggle and Price */}
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="enable-tp"
-              checked={enableTp}
-              onChange={(e) => setEnableTp(e.target.checked)}
-              className="rounded border-slate-700 text-cyan-500 focus:ring-0"
-            />
-            <label htmlFor="enable-tp" className="text-slate-400 text-[11px] w-24">
-              TARGET (₹)
+          {/* TP Row */}
+          <div className="flex items-center justify-between gap-2">
+            <label className="flex items-center gap-1.5 text-emerald-400 font-semibold cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enableTp}
+                onChange={(e) => setEnableTp(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-0"
+              />
+              <span>TAKE PROFIT (TP)</span>
             </label>
             <input
               type="number"
-              step="0.1"
               disabled={!enableTp}
+              step={meta.tickSize}
               value={takeProfitPrice}
-              onChange={(e) => setTakeProfitPrice(Number(e.target.value))}
-              className="flex-1 rounded bg-slate-900 border border-slate-700 px-2.5 py-1 text-emerald-300 disabled:opacity-40 focus:border-emerald-500 focus:outline-none"
+              onChange={(e) => setTakeProfitPrice(parseFloat(e.target.value) || 0)}
+              className="w-28 rounded bg-[#0f1420] border border-slate-800 px-2 py-1 text-right text-xs text-emerald-300 font-bold disabled:opacity-40"
             />
           </div>
         </div>
 
-        {/* Order Financial Summary Card */}
-        <div className="rounded bg-slate-900/60 border border-slate-800 p-2.5 space-y-1.5 text-[11px]">
-          <div className="flex justify-between text-slate-400">
-            <span>NOTIONAL ORDER VALUE:</span>
-            <span className="text-slate-200 font-bold">₹{notionalValue.toLocaleString('en-IN', { maximumFractionDigits: 1 })}</span>
+        {/* Pre-Trade Risk & Margin HUD */}
+        <div className="grid grid-cols-2 gap-2 p-2.5 rounded-lg bg-[#0e1420] border border-slate-800 font-mono text-[11px]">
+          <div>
+            <span className="text-slate-500 block text-[9px] uppercase">NOTIONAL VALUE</span>
+            <span className="font-bold text-slate-200">${safeFixed(notionalValue, 2)}</span>
           </div>
-          <div className="flex justify-between text-slate-400">
-            <span>MARGIN REQUIRED:</span>
-            <span className="text-cyan-300 font-bold">₹{marginRequired.toLocaleString('en-IN', { maximumFractionDigits: 1 })}</span>
+          <div>
+            <span className="text-slate-500 block text-[9px] uppercase">REQUIRED MARGIN</span>
+            <span className="font-bold text-amber-400">${safeFixed(requiredMargin, 2)}</span>
           </div>
-          <div className="flex justify-between text-slate-400">
-            <span>MAX CAPITAL AT RISK:</span>
-            <span className="text-rose-400 font-bold">₹{safeFixed(potentialLoss, 1)}</span>
+          <div>
+            <span className="text-slate-500 block text-[9px] uppercase">EST. RISK (LOSS)</span>
+            <span className="font-bold text-rose-400">
+              {enableSl ? `-$${safeFixed(totalRiskUsd, 2)}` : 'UNLIMITED'}
+            </span>
           </div>
-          <div className="flex justify-between text-slate-400">
-            <span>EXPECTED TARGET PROFIT:</span>
-            <span className="text-emerald-400 font-bold">₹{safeFixed(potentialProfit, 1)}</span>
+          <div>
+            <span className="text-slate-500 block text-[9px] uppercase">EST. REWARD (PROFIT)</span>
+            <span className="font-bold text-emerald-400">
+              {enableTp ? `+$${safeFixed(totalRewardUsd, 2)} (${calculatedRr} R:R)` : '--'}
+            </span>
           </div>
         </div>
 
+        {/* Success Message Banner */}
         {orderSuccessMsg && (
-          <div className="p-2.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-1.5 animate-fadeIn">
+          <div className="p-2.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-mono flex items-center gap-2 animate-fadeIn">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
             <span>{orderSuccessMsg}</span>
           </div>
         )}
 
-        {/* Buy and Sell Action Buttons */}
-        <div className="grid grid-cols-2 gap-3 pt-1">
-          <button
-            onClick={() => handleSubmitOrder('BUY')}
-            disabled={isSubmitting}
-            className="flex flex-col items-center justify-center py-2.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-extrabold transition-all shadow-lg shadow-emerald-950/40 disabled:opacity-50 active:scale-95"
-          >
-            <div className="flex items-center gap-1 text-xs">
-              <ArrowUpRight className="h-4 w-4" />
-              <span>BUY / LONG</span>
-            </div>
-            <span className="text-[10px] opacity-85">
-              @ ₹{safeFixed(effectiveEntry, 1)}
-            </span>
-          </button>
-
-          <button
-            onClick={() => handleSubmitOrder('SELL')}
-            disabled={isSubmitting}
-            className="flex flex-col items-center justify-center py-2.5 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-slate-950 font-extrabold transition-all shadow-lg shadow-rose-950/40 disabled:opacity-50 active:scale-95"
-          >
-            <div className="flex items-center gap-1 text-xs">
-              <ArrowDownRight className="h-4 w-4" />
-              <span>SELL / SHORT</span>
-            </div>
-            <span className="text-[10px] opacity-85">
-              @ ₹{safeFixed(effectiveEntry, 1)}
-            </span>
-          </button>
-        </div>
+        {/* Execution Trigger Button */}
+        <button
+          id="execute-order-btn"
+          onClick={handleExecute}
+          disabled={isSubmitting}
+          className={`w-full py-3 rounded-lg font-mono font-extrabold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg active:scale-98 ${
+            side === 'BUY'
+              ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20'
+              : 'bg-rose-500 hover:bg-rose-400 text-slate-950 shadow-rose-500/20'
+          }`}
+        >
+          <Zap className="h-4 w-4" />
+          <span>
+            {isSubmitting
+              ? 'ROUTING DMA PACKET...'
+              : `SEND ${side} ${size} ${symbol === 'BTC/USD' ? 'BTC' : 'LOTS'} @ $${safeFixed(effectivePrice, symbol === 'BTC/USD' ? 1 : 2)}`}
+          </span>
+        </button>
       </div>
     </div>
   );
