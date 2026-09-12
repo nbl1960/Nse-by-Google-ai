@@ -23,7 +23,7 @@ import { soundFx } from '../utils/audio';
 
 interface OrderExecutionDeskProps {
   symbol: AssetSymbol;
-  currentPrice: number;
+  currentPrice?: number;
   accountStats: AccountStats;
   upstoxStatus?: UpstoxBrokerStatus;
   onExecuteTrade: (params: {
@@ -44,9 +44,14 @@ interface OrderExecutionDeskProps {
   onClearPrimedOption?: () => void;
 }
 
+const safeFixed = (val: number | undefined | null, digits: number = 1, fallback: string = '0.0'): string => {
+  if (typeof val !== 'number' || isNaN(val)) return fallback;
+  return val.toFixed(digits);
+};
+
 export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
   symbol,
-  currentPrice,
+  currentPrice: rawCurrentPrice,
   accountStats,
   upstoxStatus = {
     connected: true,
@@ -60,6 +65,9 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
   primedOption,
   onClearPrimedOption,
 }) => {
+  const currentPrice = typeof rawCurrentPrice === 'number' && !isNaN(rawCurrentPrice) && rawCurrentPrice > 0
+    ? rawCurrentPrice
+    : (INSTRUMENT_METAS[symbol]?.basePrice || 24000);
   const isUpstoxConnected = Boolean(upstoxStatus?.connected && upstoxStatus?.mode === 'LIVE');
   const meta = INSTRUMENT_METAS[symbol] || INSTRUMENT_METAS['NIFTY 50'];
 
@@ -148,7 +156,11 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
   const potentialProfit = tpDistance * totalQuantity;
   const rrRatio = potentialLoss > 0 ? (potentialProfit / potentialLoss).toFixed(2) : '0.00';
 
-  const handleSubmitOrder = async () => {
+  const handleSubmitOrder = async (overrideSide?: 'BUY' | 'SELL') => {
+    const activeSide = overrideSide || side;
+    if (overrideSide && overrideSide !== side) {
+      setSide(overrideSide);
+    }
     setIsSubmitting(true);
     setOrderSuccessMsg(null);
 
@@ -157,7 +169,7 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
     // Call upstream execution
     onExecuteTrade({
       symbol,
-      side,
+      side: activeSide,
       type: orderType,
       product,
       price: entry,
@@ -178,8 +190,9 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            symbol: meta.upstoxKey,
             instrument_token: meta.upstoxKey,
-            transaction_type: side,
+            transaction_type: activeSide,
             order_type: orderType,
             product,
             quantity: totalQuantity,
@@ -193,7 +206,7 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
     }
 
     soundFx.playOrderFill();
-    setOrderSuccessMsg(`Order placed: ${side} ${lots} Lots (${totalQuantity} Qty) @ ₹${entry.toFixed(1)}`);
+    setOrderSuccessMsg(`Order placed: ${activeSide} ${lots} Lots (${totalQuantity} Qty) @ ₹${entry.toFixed(1)}`);
     setIsSubmitting(false);
 
     setTimeout(() => {
@@ -420,11 +433,11 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
           </div>
           <div className="flex justify-between text-slate-400">
             <span>MAX CAPITAL AT RISK:</span>
-            <span className="text-rose-400 font-bold">₹{potentialLoss.toFixed(1)}</span>
+            <span className="text-rose-400 font-bold">₹{safeFixed(potentialLoss, 1)}</span>
           </div>
           <div className="flex justify-between text-slate-400">
             <span>EXPECTED TARGET PROFIT:</span>
-            <span className="text-emerald-400 font-bold">₹{potentialProfit.toFixed(1)}</span>
+            <span className="text-emerald-400 font-bold">₹{safeFixed(potentialProfit, 1)}</span>
           </div>
         </div>
 
@@ -438,10 +451,7 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
         {/* Buy and Sell Action Buttons */}
         <div className="grid grid-cols-2 gap-3 pt-1">
           <button
-            onClick={() => {
-              setSide('BUY');
-              handleSubmitOrder();
-            }}
+            onClick={() => handleSubmitOrder('BUY')}
             disabled={isSubmitting}
             className="flex flex-col items-center justify-center py-2.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-extrabold transition-all shadow-lg shadow-emerald-950/40 disabled:opacity-50 active:scale-95"
           >
@@ -450,15 +460,12 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
               <span>BUY / LONG</span>
             </div>
             <span className="text-[10px] opacity-85">
-              @ ₹{effectiveEntry.toFixed(1)}
+              @ ₹{safeFixed(effectiveEntry, 1)}
             </span>
           </button>
 
           <button
-            onClick={() => {
-              setSide('SELL');
-              handleSubmitOrder();
-            }}
+            onClick={() => handleSubmitOrder('SELL')}
             disabled={isSubmitting}
             className="flex flex-col items-center justify-center py-2.5 px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-slate-950 font-extrabold transition-all shadow-lg shadow-rose-950/40 disabled:opacity-50 active:scale-95"
           >
@@ -467,7 +474,7 @@ export const OrderExecutionDesk: React.FC<OrderExecutionDeskProps> = ({
               <span>SELL / SHORT</span>
             </div>
             <span className="text-[10px] opacity-85">
-              @ ₹{effectiveEntry.toFixed(1)}
+              @ ₹{safeFixed(effectiveEntry, 1)}
             </span>
           </button>
         </div>

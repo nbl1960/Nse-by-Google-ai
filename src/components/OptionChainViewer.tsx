@@ -4,31 +4,58 @@ import { Layers, Activity, TrendingUp, TrendingDown, Target, Zap } from 'lucide-
 
 interface OptionChainViewerProps {
   data: OptionChainData | null;
-  selectedAsset: AssetSymbol;
-  currentPrice: number;
-  onSelectOptionTrade: (strike: number, type: 'CE' | 'PE', ltp: number) => void;
+  selectedAsset?: AssetSymbol;
+  symbol?: AssetSymbol;
+  currentPrice?: number;
+  onSelectOptionTrade?: (strike: number, type: 'CE' | 'PE', ltp: number) => void;
+  onSelectStrike?: (strike: number, type: 'CE' | 'PE', ltp: number) => void;
+  unavailableReason?: string | null;
 }
+
+const safeFixed = (val: number | undefined | null, digits: number = 1, fallback: string = '0.0'): string => {
+  if (typeof val !== 'number' || isNaN(val)) return fallback;
+  return val.toFixed(digits);
+};
 
 export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
   data,
   selectedAsset,
+  symbol,
   currentPrice,
   onSelectOptionTrade,
+  onSelectStrike,
+  unavailableReason,
 }) => {
+  const activeAsset = selectedAsset || symbol || 'NIFTY 50';
+  const effectivePrice = typeof currentPrice === 'number' && !isNaN(currentPrice) 
+    ? currentPrice 
+    : (data?.underlyingPrice ?? 0);
+  const handleSelect = onSelectOptionTrade || onSelectStrike || (() => {});
+
   if (!data || !data.strikes || data.strikes.length === 0) {
     return (
-      <div className="flex h-96 items-center justify-center rounded-xl border border-slate-800 bg-[#0c1017] p-8 text-center text-slate-400 font-mono text-xs">
-        <div className="flex flex-col items-center gap-2">
-          <Activity className="h-6 w-6 animate-spin text-cyan-400" />
-          <span>Calibrating Live Option Chain & PCR Matrix for {selectedAsset}...</span>
+      <div className="flex h-96 items-center justify-center rounded-xl border border-slate-800 bg-[#0c1017] p-8 text-center text-slate-400 font-mono text-xs select-none">
+        <div className="flex flex-col items-center gap-2 max-w-md">
+          <div className="rounded bg-amber-500/10 border border-amber-500/20 px-3 py-1 font-bold text-amber-400 text-xs">
+            DATA UNAVAILABLE
+          </div>
+          <p className="text-xs text-slate-300 leading-relaxed mt-1">
+            {unavailableReason || `Live Upstox Option Chain & Open Interest (OI) feed for ${activeAsset} is currently unavailable.`}
+          </p>
+          <p className="text-[11px] text-slate-500 mt-1">
+            Real CE/PE LTP, OI, and contract volume require an active Upstox Pro v2 token with F&O permissions during exchange trading hours. Synthetic derivatives data is strictly prohibited.
+          </p>
         </div>
       </div>
     );
   }
 
   // Calculate max OI for visual proportion bars
-  const maxCeOi = Math.max(...data.strikes.map((s) => s.ceOi), 1);
-  const maxPeOi = Math.max(...data.strikes.map((s) => s.peOi), 1);
+  const maxCeOi = Math.max(...data.strikes.map((s) => s.ceOi || 0), 1);
+  const maxPeOi = Math.max(...data.strikes.map((s) => s.peOi || 0), 1);
+  const totalCe = data.totalCeOi || 0;
+  const totalPe = data.totalPeOi || 0;
+  const totalCombined = Math.max(1, totalCe + totalPe);
 
   return (
     <div className="rounded-xl border border-slate-800/80 bg-[#0c1017] p-4 text-xs select-none">
@@ -38,19 +65,19 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
         <div className="rounded-lg border border-slate-800 bg-[#080b11] p-3">
           <div className="text-[10px] text-slate-400 font-medium uppercase">PUT-CALL RATIO (PCR)</div>
           <div className="flex items-baseline gap-2 mt-1">
-            <span className="font-mono text-lg font-bold text-slate-100">{data.pcr}</span>
+            <span className="font-mono text-lg font-bold text-slate-100">{safeFixed(data.pcr, 2, '1.00')}</span>
             <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-              data.sentiment.includes('BULLISH')
+              data.sentiment?.includes('BULLISH')
                 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                : data.sentiment.includes('BEARISH')
+                : data.sentiment?.includes('BEARISH')
                 ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
                 : 'bg-slate-800 text-slate-300'
             }`}>
-              {data.sentiment.replace('_', ' ')}
+              {(data.sentiment || 'NEUTRAL').replace('_', ' ')}
             </span>
           </div>
           <div className="text-[10px] text-slate-500 mt-1">
-            {data.pcr > 1.2 ? 'Heavy Put Writing (Strong Floor)' : data.pcr < 0.8 ? 'Heavy Call Writing (Strong Ceiling)' : 'Balanced Gamma Exposure'}
+            {(data.pcr || 1) > 1.2 ? 'Heavy Put Writing (Strong Floor)' : (data.pcr || 1) < 0.8 ? 'Heavy Call Writing (Strong Ceiling)' : 'Balanced Gamma Exposure'}
           </div>
         </div>
 
@@ -61,7 +88,7 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
             MAX PAIN STRIKE
           </div>
           <div className="font-mono text-lg font-bold text-amber-300 mt-1">
-            ₹{data.maxPain.toLocaleString('en-IN')}
+            ₹{(data.maxPain ?? 0).toLocaleString('en-IN')}
           </div>
           <div className="text-[10px] text-slate-500 mt-1">
             Institutional expiration gravitational pull
@@ -72,10 +99,10 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
         <div className="rounded-lg border border-slate-800 bg-[#080b11] p-3">
           <div className="text-[10px] text-slate-400 font-medium uppercase">ATM STRADDLE PREMIUM</div>
           <div className="font-mono text-lg font-bold text-cyan-300 mt-1">
-            ₹{data.atmStraddle}
+            ₹{safeFixed(data.atmStraddle, 1, '0.0')}
           </div>
           <div className="text-[10px] text-slate-500 mt-1">
-            Expected intraday move: ±{(data.atmStraddle).toFixed(0)} pts
+            Expected intraday move: ±{safeFixed(data.atmStraddle, 0, '0')} pts
           </div>
         </div>
 
@@ -83,21 +110,21 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
         <div className="rounded-lg border border-slate-800 bg-[#080b11] p-3 col-span-2 md:col-span-2">
           <div className="text-[10px] text-slate-400 font-medium uppercase flex items-center justify-between">
             <span>TOTAL OPEN INTEREST SKEW</span>
-            <span className="font-mono text-slate-300">EXPIRY: {data.expiry}</span>
+            <span className="font-mono text-slate-300">EXPIRY: {data.expiry || 'Current Weekly'}</span>
           </div>
           <div className="flex items-center justify-between font-mono text-xs font-semibold mt-1">
-            <span className="text-rose-400">CALL OI: {(data.totalCeOi / 100000).toFixed(2)}L</span>
-            <span className="text-emerald-400">PUT OI: {(data.totalPeOi / 100000).toFixed(2)}L</span>
+            <span className="text-rose-400">CALL OI: {safeFixed(totalCe / 100000, 2, '0.00')}L</span>
+            <span className="text-emerald-400">PUT OI: {safeFixed(totalPe / 100000, 2, '0.00')}L</span>
           </div>
           <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex mt-1.5">
             <div
               className="bg-rose-500 h-full transition-all"
-              style={{ width: `${(data.totalCeOi / (data.totalCeOi + data.totalPeOi)) * 100}%` }}
+              style={{ width: `${(totalCe / totalCombined) * 100}%` }}
               title="Call OI (Resistance)"
             />
             <div
               className="bg-emerald-500 h-full transition-all"
-              style={{ width: `${(data.totalPeOi / (data.totalCeOi + data.totalPeOi)) * 100}%` }}
+              style={{ width: `${(totalPe / totalCombined) * 100}%` }}
               title="Put OI (Support)"
             />
           </div>
@@ -124,7 +151,7 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
               <th className="py-1.5 px-2 text-right">IV</th>
               <th className="py-1.5 px-2 text-right">LTP (₹)</th>
               <th className="py-1.5 px-2 text-center border-r border-slate-800">TRADE CE</th>
-              <th className="py-1.5 px-3 text-center text-slate-300 font-bold">LTP: ₹{currentPrice.toFixed(1)}</th>
+              <th className="py-1.5 px-3 text-center text-slate-300 font-bold">LTP: ₹{safeFixed(effectivePrice, 1, '0.0')}</th>
               <th className="py-1.5 px-2 text-center border-l border-slate-800">TRADE PE</th>
               <th className="py-1.5 px-2 text-left">LTP (₹)</th>
               <th className="py-1.5 px-2 text-left">IV</th>
@@ -134,8 +161,10 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
           <tbody>
             {data.strikes.map((row) => {
               const isMaxPain = row.strike === data.maxPain;
-              const ceOiPct = Math.round((row.ceOi / maxCeOi) * 100);
-              const peOiPct = Math.round((row.peOi / maxPeOi) * 100);
+              const ceOiPct = Math.round(((row.ceOi || 0) / maxCeOi) * 100);
+              const peOiPct = Math.round(((row.peOi || 0) / maxPeOi) * 100);
+              const ceChg = row.ceOiChange || 0;
+              const peChg = row.peOiChange || 0;
 
               return (
                 <tr
@@ -155,29 +184,29 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
                       style={{ width: `${ceOiPct}%` }}
                     />
                     <div className="relative z-10 text-slate-200">
-                      {(row.ceOi / 1000).toFixed(0)}k
-                      <span className={`ml-1 text-[9px] ${row.ceOiChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        ({row.ceOiChange >= 0 ? '+' : ''}{(row.ceOiChange / 1000).toFixed(0)}k)
+                      {safeFixed((row.ceOi || 0) / 1000, 0, '0')}k
+                      <span className={`ml-1 text-[9px] ${ceChg >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        ({ceChg >= 0 ? '+' : ''}{safeFixed(ceChg / 1000, 0, '0')}k)
                       </span>
                     </div>
                   </td>
 
                   {/* CE IV */}
                   <td className="py-1.5 px-2 text-right text-slate-400">
-                    {row.ceIv}%
+                    {row.ceIv ?? 0}%
                   </td>
 
                   {/* CE LTP */}
                   <td className="py-1.5 px-2 text-right font-bold text-slate-100">
-                    ₹{row.ceLtp.toFixed(1)}
+                    ₹{safeFixed(row.ceLtp, 1, '0.0')}
                   </td>
 
                   {/* Trade CE Button */}
                   <td className="py-1.5 px-2 text-center border-r border-slate-800">
                     <button
-                      onClick={() => onSelectOptionTrade(row.strike, 'CE', row.ceLtp)}
+                      onClick={() => handleSelect(row.strike, 'CE', row.ceLtp ?? 0)}
                       className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500 hover:text-white transition-all text-[10px] font-semibold"
-                      title={`Select ${selectedAsset} ${row.strike} CE`}
+                      title={`Select ${activeAsset} ${row.strike} CE`}
                     >
                       BUY CE
                     </button>
@@ -203,9 +232,9 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
                   {/* Trade PE Button */}
                   <td className="py-1.5 px-2 text-center border-l border-slate-800">
                     <button
-                      onClick={() => onSelectOptionTrade(row.strike, 'PE', row.peLtp)}
+                      onClick={() => handleSelect(row.strike, 'PE', row.peLtp ?? 0)}
                       className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500 hover:text-white transition-all text-[10px] font-semibold"
-                      title={`Select ${selectedAsset} ${row.strike} PE`}
+                      title={`Select ${activeAsset} ${row.strike} PE`}
                     >
                       BUY PE
                     </button>
@@ -213,12 +242,12 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
 
                   {/* PE LTP */}
                   <td className="py-1.5 px-2 text-left font-bold text-slate-100">
-                    ₹{row.peLtp.toFixed(1)}
+                    ₹{safeFixed(row.peLtp, 1, '0.0')}
                   </td>
 
                   {/* PE IV */}
                   <td className="py-1.5 px-2 text-left text-slate-400">
-                    {row.peIv}%
+                    {row.peIv ?? 0}%
                   </td>
 
                   {/* PE OI & Visual Bar */}
@@ -228,9 +257,9 @@ export const OptionChainViewer: React.FC<OptionChainViewerProps> = ({
                       style={{ width: `${peOiPct}%` }}
                     />
                     <div className="relative z-10 text-slate-200">
-                      {(row.peOi / 1000).toFixed(0)}k
-                      <span className={`ml-1 text-[9px] ${row.peOiChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        ({row.peOiChange >= 0 ? '+' : ''}{(row.peOiChange / 1000).toFixed(0)}k)
+                      {safeFixed((row.peOi || 0) / 1000, 0, '0')}k
+                      <span className={`ml-1 text-[9px] ${peChg >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        ({peChg >= 0 ? '+' : ''}{safeFixed(peChg / 1000, 0, '0')}k)
                       </span>
                     </div>
                   </td>

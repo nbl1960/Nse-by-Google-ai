@@ -33,6 +33,11 @@ interface HeaderProps {
   onOpenUpstoxModal: () => void;
 }
 
+const safeFixed = (val: number | undefined | null, digits: number = 2, fallback: string = '0.00'): string => {
+  if (typeof val !== 'number' || isNaN(val)) return fallback;
+  return val.toFixed(digits);
+};
+
 export const Header: React.FC<HeaderProps> = ({
   selectedAsset,
   onSelectAsset,
@@ -125,9 +130,9 @@ export const Header: React.FC<HeaderProps> = ({
             <div>
               <div className="text-[9px] text-slate-400 uppercase font-semibold">INDIA VIX</div>
               <div className="flex items-center gap-1">
-                <span className="font-bold text-slate-100">{indiaVix.toFixed(2)}</span>
-                <span className={`text-[10px] ${indiaVixChange <= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {indiaVixChange > 0 ? '+' : ''}{indiaVixChange.toFixed(2)}%
+                <span className="font-bold text-slate-100">{safeFixed(indiaVix, 2, '13.80')}</span>
+                <span className={`text-[10px] ${(indiaVixChange || 0) <= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {(indiaVixChange || 0) > 0 ? '+' : ''}{safeFixed(indiaVixChange, 2, '0.00')}%
                 </span>
               </div>
             </div>
@@ -184,10 +189,10 @@ export const Header: React.FC<HeaderProps> = ({
                   </div>
                   <div className="flex items-center gap-1 font-mono text-[10px]">
                     <span className="text-slate-200 font-semibold">
-                      ₹{price > 1000 ? price.toLocaleString('en-IN', { maximumFractionDigits: 1 }) : price.toFixed(1)}
+                      ₹{price > 1000 ? price.toLocaleString('en-IN', { maximumFractionDigits: 1 }) : safeFixed(price, 1)}
                     </span>
-                    <span className={chg >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                      {chg >= 0 ? '+' : ''}{chg.toFixed(2)}%
+                    <span className={(chg || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                      {(chg || 0) >= 0 ? '+' : ''}{safeFixed(chg, 2)}%
                     </span>
                   </div>
                 </div>

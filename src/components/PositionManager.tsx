@@ -22,6 +22,11 @@ interface PositionManagerProps {
   onCancelOrder: (orderId: string) => void;
 }
 
+const safeFixed = (val: number | undefined | null, digits: number = 2, fallback: string = '0.00'): string => {
+  if (typeof val !== 'number' || isNaN(val)) return fallback;
+  return val.toFixed(digits);
+};
+
 export const PositionManager: React.FC<PositionManagerProps> = ({
   positions = [],
   orders = [],
@@ -37,8 +42,8 @@ export const PositionManager: React.FC<PositionManagerProps> = ({
   const safeHistory = tradeHistory || [];
 
   // Stats calculation
-  const totalPnL = safePositions.reduce((acc, p) => acc + p.pnl, 0);
-  const winCount = safeHistory.filter((t) => t.pnl > 0).length;
+  const totalPnL = safePositions.reduce((acc, p) => acc + (p?.pnl || 0), 0);
+  const winCount = safeHistory.filter((t) => (t?.pnl || 0) > 0).length;
   const winRate = safeHistory.length > 0 ? Math.round((winCount / safeHistory.length) * 100) : 0;
 
   return (
@@ -60,7 +65,7 @@ export const PositionManager: React.FC<PositionManagerProps> = ({
               <span
                 className={`text-[10px] font-bold ${totalPnL >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}
               >
-                ({totalPnL >= 0 ? '+' : ''}₹{totalPnL.toFixed(2)})
+                ({totalPnL >= 0 ? '+' : ''}₹{safeFixed(totalPnL, 2)})
               </span>
             )}
           </button>
@@ -149,17 +154,17 @@ export const PositionManager: React.FC<PositionManagerProps> = ({
                           {pos.lots ? `${pos.lots}L (${pos.size})` : `${pos.size} Qty`}
                         </td>
                         <td className="py-2 text-right text-slate-300">
-                          ₹{pos.entryPrice.toFixed(1)}
+                          ₹{safeFixed(pos.entryPrice, 1)}
                         </td>
                         <td className="py-2 text-right font-bold text-slate-100">
-                          ₹{pos.currentPrice.toFixed(1)}
+                          ₹{safeFixed(pos.currentPrice, 1)}
                         </td>
                         <td
                           className={`py-2 text-right font-bold ${
                             isProfit ? 'text-emerald-400' : 'text-rose-400'
                           }`}
                         >
-                          {isProfit ? '+' : ''}₹{pos.pnl.toFixed(2)} ({isProfit ? '+' : ''}{pos.pnlPercent.toFixed(2)}%)
+                          {isProfit ? '+' : ''}₹{safeFixed(pos.pnl, 2)} ({isProfit ? '+' : ''}{safeFixed(pos.pnlPercent, 2)}%)
                         </td>
                         <td className="py-2 text-right">
                           <div className="flex items-center justify-end gap-1.5">
@@ -240,10 +245,10 @@ export const PositionManager: React.FC<PositionManagerProps> = ({
                       </td>
                       <td className="py-2 text-right text-slate-300">{ord.size}</td>
                       <td className="py-2 text-right font-bold text-slate-100">
-                        ₹{ord.price.toFixed(1)}
+                        ₹{safeFixed(ord.price, 1)}
                       </td>
                       <td className="py-2 text-right text-slate-500 text-[10px]">
-                        {new Date(ord.createdAt).toLocaleTimeString()}
+                        {ord.createdAt ? new Date(ord.createdAt).toLocaleTimeString() : '—'}
                       </td>
                       <td className="py-2 text-right">
                         <button
@@ -283,11 +288,11 @@ export const PositionManager: React.FC<PositionManagerProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {tradeHistory.map((th) => {
-                    const isWin = th.pnl >= 0;
+                    const isWin = (th.pnl || 0) >= 0;
                     return (
                       <tr key={th.id} className="hover:bg-slate-900/40">
                         <td className="py-2 text-slate-500 text-[10px]">
-                          {new Date(th.exitTime).toLocaleTimeString()}
+                          {th.exitTime ? new Date(th.exitTime).toLocaleTimeString() : '—'}
                         </td>
                         <td className="py-2 font-bold text-slate-200">{th.symbol}</td>
                         <td className="py-2">
@@ -303,17 +308,17 @@ export const PositionManager: React.FC<PositionManagerProps> = ({
                         </td>
                         <td className="py-2 text-right text-slate-300">{th.size}</td>
                         <td className="py-2 text-right text-slate-400">
-                          ₹{th.entryPrice.toFixed(1)}
+                          ₹{safeFixed(th.entryPrice, 1)}
                         </td>
                         <td className="py-2 text-right font-bold text-slate-200">
-                          ₹{th.exitPrice.toFixed(1)}
+                          ₹{safeFixed(th.exitPrice, 1)}
                         </td>
                         <td
                           className={`py-2 text-right font-bold ${
                             isWin ? 'text-emerald-400' : 'text-rose-400'
                           }`}
                         >
-                          {isWin ? '+' : ''}₹{th.pnl.toFixed(2)}
+                          {isWin ? '+' : ''}₹{safeFixed(th.pnl, 2)}
                         </td>
                         <td className="py-2 text-right text-slate-400 text-[10px]">
                           {th.exitReason || 'Intraday Target Reached'}

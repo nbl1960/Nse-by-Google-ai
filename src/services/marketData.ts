@@ -300,7 +300,7 @@ export class IndianMarketDataManager {
   /**
    * Updates internal pricing cache with live quotes received directly from Upstox Pro API v2
    */
-  public updateFromLiveQuotes(quotes: Record<string, { ltp: number; change?: number; changePercent?: number }>) {
+  public updateFromLiveQuotes(quotes: Record<string, { ltp: number; change?: number; changePercent?: number; depth?: any }>) {
     for (const [sym, q] of Object.entries(quotes)) {
       const asset = sym as AssetSymbol;
       if (this.prices[asset] !== undefined && q && typeof q.ltp === 'number') {

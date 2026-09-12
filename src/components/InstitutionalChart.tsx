@@ -37,6 +37,11 @@ interface InstitutionalChartProps {
   onNavigateToSetups?: () => void;
 }
 
+const safeFixed = (val: number | undefined | null, digits: number = 1, fallback: string = '--'): string => {
+  if (typeof val !== 'number' || isNaN(val)) return fallback;
+  return val.toFixed(digits);
+};
+
 export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
   candles,
   symbol,
@@ -64,10 +69,17 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
   // Zoom & Pan continuous navigation state (TradingView-style direct viewport manipulation)
   const [candleSpacing, setCandleSpacing] = useState<number>(14);
   const [panX, setPanX] = useState<number>(0);
-  const [panY, setPanY] = useState<number>(0);
-  const [priceZoom, setPriceZoom] = useState<number>(1.0);
   const [isAutoPriceScale, setIsAutoPriceScale] = useState<boolean>(true);
+  const [manualCenterPrice, setManualCenterPrice] = useState<number | null>(null);
+  const [manualPriceSpan, setManualPriceSpan] = useState<number | null>(null);
   const [cursorStyle, setCursorStyle] = useState<'crosshair' | 'grabbing' | 'ns-resize' | 'ew-resize'>('crosshair');
+
+  const lastPriceScaleRef = useRef<{ center: number; span: number; min: number; max: number }>({
+    center: 24000,
+    span: 200,
+    min: 23900,
+    max: 24100,
+  });
 
   // Interactive drag state ref for active pointer tracking
   const dragRef = useRef<{
@@ -76,18 +88,20 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
     startX: number;
     startY: number;
     startPanX: number;
-    startPanY: number;
-    startPriceZoom: number;
+    startCenter: number;
+    startSpan: number;
     startCandleSpacing: number;
+    startIsAuto: boolean;
   }>({
     isDragging: false,
     mode: 'pan',
     startX: 0,
     startY: 0,
     startPanX: 0,
-    startPanY: 0,
-    startPriceZoom: 1.0,
+    startCenter: 24000,
+    startSpan: 200,
     startCandleSpacing: 14,
+    startIsAuto: true,
   });
 
   const adjustedRangeRef = useRef<number>(100);
@@ -95,10 +109,10 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
   // Reset viewport when asset symbol changes
   useEffect(() => {
     setPanX(0);
-    setPanY(0);
-    setPriceZoom(1.0);
-    setCandleSpacing(14);
     setIsAutoPriceScale(true);
+    setManualCenterPrice(null);
+    setManualPriceSpan(null);
+    setCandleSpacing(14);
   }, [symbol]);
 
   const [isMaximized, setIsMaximized] = useState<boolean>(false);
@@ -157,10 +171,10 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
 
   const handleResetZoom = () => {
     setPanX(0);
-    setPanY(0);
-    setPriceZoom(1.0);
     setCandleSpacing(14);
     setIsAutoPriceScale(true);
+    setManualCenterPrice(null);
+    setManualPriceSpan(null);
   };
 
   // Technical Calculations on full history
@@ -269,17 +283,22 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
     const autoMin = minPrice - padding;
     const autoMax = maxPrice + padding;
     const autoCenter = (autoMin + autoMax) / 2;
-    const autoHalfRange = (autoMax - autoMin) / 2;
+    const autoSpan = Math.max(0.01, autoMax - autoMin);
 
-    // Apply interactive priceZoom and 2D panY
-    const effectiveHalfRange = autoHalfRange / Math.max(0.1, priceZoom);
-    const priceOffsetFromPan = (panY / Math.max(1, chartHeight)) * (2 * effectiveHalfRange);
-    const effectiveCenter = autoCenter + priceOffsetFromPan;
+    const effectiveCenter = manualCenterPrice !== null ? manualCenterPrice : autoCenter;
+    const effectiveSpan = manualPriceSpan !== null ? manualPriceSpan : autoSpan;
 
-    const adjustedMin = effectiveCenter - effectiveHalfRange;
-    const adjustedMax = effectiveCenter + effectiveHalfRange;
+    const adjustedMin = effectiveCenter - effectiveSpan / 2;
+    const adjustedMax = effectiveCenter + effectiveSpan / 2;
     const adjustedRange = Math.max(0.01, adjustedMax - adjustedMin);
     adjustedRangeRef.current = adjustedRange;
+
+    lastPriceScaleRef.current = {
+      center: effectiveCenter,
+      span: effectiveSpan,
+      min: adjustedMin,
+      max: adjustedMax,
+    };
 
     // Coordinate conversion functions
     const getY = (price: number) => {
@@ -940,8 +959,9 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
     candles,
     candleSpacing,
     panX,
-    panY,
-    priceZoom,
+    isAutoPriceScale,
+    manualCenterPrice,
+    manualPriceSpan,
     symbol,
     currentPrice,
     indicators,
@@ -977,8 +997,13 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
 
       if (mouseX >= chartWidth || e.ctrlKey || e.metaKey) {
         // Vertical price scale zoom (either hover over price axis or with Ctrl/Cmd)
-        const factor = e.deltaY < 0 ? 1.08 : 0.92;
-        setPriceZoom((prev) => Math.max(0.15, Math.min(8.0, prev * factor)));
+        const factor = e.deltaY < 0 ? 0.92 : 1.08;
+        const currentScale = lastPriceScaleRef.current;
+        const baseSpan = manualPriceSpan !== null ? manualPriceSpan : currentScale.span;
+        const baseCenter = manualCenterPrice !== null ? manualCenterPrice : currentScale.center;
+        const newSpan = Math.max(1.0, baseSpan * factor);
+        setManualPriceSpan(newSpan);
+        setManualCenterPrice(baseCenter);
         setIsAutoPriceScale(false);
       } else if (e.shiftKey) {
         // Horizontal pan with Shift + scroll wheel
@@ -1043,13 +1068,15 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
       setCursorStyle('grabbing');
     }
 
+    const currentScale = lastPriceScaleRef.current;
     const startState = {
       startX,
       startY,
       startPanX: panX,
-      startPanY: panY,
-      startPriceZoom: priceZoom,
+      startCenter: manualCenterPrice !== null ? manualCenterPrice : currentScale.center,
+      startSpan: manualPriceSpan !== null ? manualPriceSpan : currentScale.span,
       startCandleSpacing: candleSpacing,
+      startIsAuto: isAutoPriceScale,
     };
 
     dragRef.current = {
@@ -1069,11 +1096,17 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
         const minPanX = -chartWidth * 0.75;
         const newPanX = Math.max(minPanX, Math.min(maxPanX, startState.startPanX + deltaX));
         setPanX(newPanX);
-        setPanY(startState.startPanY + deltaY);
+
+        const pricePerPx = startState.startSpan / Math.max(1, chartHeight);
+        const newCenter = startState.startCenter + deltaY * pricePerPx;
+        setManualCenterPrice(newCenter);
+        setManualPriceSpan(startState.startSpan);
         setIsAutoPriceScale(false);
       } else if (mode === 'priceScale') {
-        const factor = Math.exp(-deltaY * 0.008);
-        setPriceZoom(Math.max(0.15, Math.min(8.0, startState.startPriceZoom * factor)));
+        const factor = Math.exp(deltaY * 0.005);
+        const newSpan = Math.max(1.0, startState.startSpan * factor);
+        setManualPriceSpan(newSpan);
+        setManualCenterPrice(startState.startCenter);
         setIsAutoPriceScale(false);
       } else if (mode === 'timeScale') {
         const spacingDelta = deltaX * 0.08;
@@ -1140,14 +1173,14 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
 
     if (x >= chartWidth) {
       // Double clicking price scale resets vertical scale to auto
-      setPanY(0);
-      setPriceZoom(1.0);
+      setManualCenterPrice(null);
+      setManualPriceSpan(null);
       setIsAutoPriceScale(true);
     } else {
       // Double clicking main chart resets both pan (X and Y) and scales to default
       setPanX(0);
-      setPanY(0);
-      setPriceZoom(1.0);
+      setManualCenterPrice(null);
+      setManualPriceSpan(null);
       setCandleSpacing(14);
       setIsAutoPriceScale(true);
     }
@@ -1211,13 +1244,13 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
             </button>
             <button
               onClick={() => {
-                setPanY(0);
-                setPriceZoom(1.0);
                 setIsAutoPriceScale(true);
+                setManualCenterPrice(null);
+                setManualPriceSpan(null);
               }}
               title="Reset Price Scale to Auto"
               className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold border transition-all ${
-                !isAutoPriceScale || panY !== 0 || priceZoom !== 1.0
+                !isAutoPriceScale || manualCenterPrice !== null || manualPriceSpan !== null
                   ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm'
                   : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
               }`}
@@ -1408,12 +1441,12 @@ export const InstitutionalChart: React.FC<InstitutionalChartProps> = ({
         )}
 
         {/* Auto Price Scale Button if scaled or offset */}
-        {(!isAutoPriceScale || panY !== 0 || priceZoom !== 1.0) && (
+        {(!isAutoPriceScale || manualCenterPrice !== null || manualPriceSpan !== null) && (
           <button
             onClick={() => {
-              setPanY(0);
-              setPriceZoom(1.0);
               setIsAutoPriceScale(true);
+              setManualCenterPrice(null);
+              setManualPriceSpan(null);
             }}
             className="absolute bottom-9 right-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-mono text-[10px] font-bold px-2 py-0.5 rounded shadow z-10 transition-all"
             title="Reset price scale to auto"

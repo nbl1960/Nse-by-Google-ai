@@ -30,6 +30,7 @@ import { OrderBookAndTape } from './components/OrderBookAndTape';
 import { PositionManager } from './components/PositionManager';
 import { UpstoxTokenModal } from './components/UpstoxTokenModal';
 import { OptionChainViewer } from './components/OptionChainViewer';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { soundFx } from './utils/audio';
 import { 
   BarChart2, 
@@ -123,7 +124,49 @@ export default function App() {
   // Active Positions & Orders
   const [positions, setPositions] = useState<Position[]>([]);
   const [orders, setOrders] = useState<WorkingOrder[]>([]);
-  const [tradeHistory, setTradeHistory] = useState<TradeHistoryItem[]>([]);
+  const [tradeHistory, setTradeHistory] = useState<TradeHistoryItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('apex_upstox_trade_journal');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Persist Trade Journal to LocalStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('apex_upstox_trade_journal', JSON.stringify(tradeHistory));
+    } catch {
+      // Storage quota safety
+    }
+  }, [tradeHistory]);
+
+  // Institutional Keyboard Shortcuts (1-4 for Tabs, Esc to clear/close)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is typing in an input or textarea
+      const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (targetTag === 'input' || targetTag === 'textarea') return;
+
+      if (e.key === '1') {
+        setCenterTab('CHART');
+      } else if (e.key === '2') {
+        setCenterTab('OPTION_CHAIN');
+      } else if (e.key === '3') {
+        setCenterTab('CONFLUENCE');
+      } else if (e.key === '4') {
+        setCenterTab('SETUPS');
+      } else if (e.key === 'Escape') {
+        setIsUpstoxModalOpen(false);
+        setPrimedOption(null);
+        setPrimedSetup(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Macro & Intermarket Data from Backend
   const [macroData, setMacroData] = useState<MacroData | null>(null);
@@ -132,6 +175,9 @@ export default function App() {
   const [activeSetup, setActiveSetup] = useState<InstitutionalSetup | null>(null);
   const [primedSetup, setPrimedSetup] = useState<InstitutionalSetup | null>(null);
   const [primedOption, setPrimedOption] = useState<{ strike: number; type: 'CE' | 'PE'; ltp: number } | null>(null);
+  const [liveDepths, setLiveDepths] = useState<Record<string, { bids: any[]; asks: any[]; spread?: number } | null>>({});
+  const [optionChainData, setOptionChainData] = useState<OptionChainData | null>(null);
+  const [optionChainUnavailableReason, setOptionChainUnavailableReason] = useState<string | null>(null);
 
   // Timeframe change handler with live klines loading
   const handleTimeframeChange = (tf: Timeframe) => {
@@ -181,6 +227,7 @@ export default function App() {
           if (data?.quotes) {
             const newPrices: Record<string, number> = {};
             const newChanges: Record<string, number> = {};
+            const newDepths: Record<string, any> = {};
             for (const [sym, q] of Object.entries<any>(data.quotes)) {
               if (q?.ltp && typeof q.ltp === 'number') {
                 newPrices[sym] = q.ltp;
@@ -188,9 +235,13 @@ export default function App() {
               if (q?.changePercent !== undefined && typeof q.changePercent === 'number') {
                 newChanges[sym] = q.changePercent;
               }
+              if (q?.depth) {
+                newDepths[sym] = q.depth;
+              }
             }
             setAssetPrices((prev) => ({ ...prev, ...newPrices }));
             setAssetChanges((prev) => ({ ...prev, ...newChanges }));
+            setLiveDepths((prev) => ({ ...prev, ...newDepths }));
             indianMarketService.updateFromLiveQuotes(data.quotes);
           }
         })
@@ -217,6 +268,25 @@ export default function App() {
       clearInterval(quoteTimer);
     };
   }, [selectedAsset, timeframe]);
+
+  // Fetch live genuine Upstox option chain (zero synthetic fallback)
+  useEffect(() => {
+    fetch(`/api/market/option-chain?symbol=${encodeURIComponent(selectedAsset)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.status === 'SUCCESS' && Array.isArray(data.strikes) && data.strikes.length > 0) {
+          setOptionChainData(data);
+          setOptionChainUnavailableReason(null);
+        } else {
+          setOptionChainData(null);
+          setOptionChainUnavailableReason(data?.message || 'Live Upstox Option Chain is unavailable.');
+        }
+      })
+      .catch(() => {
+        setOptionChainData(null);
+        setOptionChainUnavailableReason('Live Upstox Option Chain is unavailable.');
+      });
+  }, [selectedAsset]);
 
   // Subscribe to real-time price tick updates
   useEffect(() => {
@@ -350,20 +420,27 @@ export default function App() {
     }));
   }, [positions, accountStats.balance]);
 
-  // Order Book generation
+  // Order Book: Sourced exclusively from live broker market depth
   const orderBookData = useMemo(() => {
-    return generateOrderBook(currentPrice, selectedAsset, 5);
-  }, [currentPrice, selectedAsset]);
-
-  // Option Chain generation
-  const optionChainData = useMemo<OptionChainData>(() => {
-    return generateOptionChain(currentPrice, selectedAsset);
-  }, [currentPrice, selectedAsset]);
+    const depth = liveDepths[selectedAsset];
+    if (depth && (depth.bids?.length || depth.asks?.length)) {
+      return {
+        bids: depth.bids || [],
+        asks: depth.asks || [],
+        spread: depth.spread || 0.05,
+      };
+    }
+    return {
+      bids: [],
+      asks: [],
+      spread: 0,
+    };
+  }, [liveDepths, selectedAsset]);
 
   // Confluence Factors for Indian Markets
   const confluenceFactors = useMemo<ConfluenceFactor[]>(() => {
     const meta = INSTRUMENT_METAS[selectedAsset];
-    const isPcrBullish = optionChainData.pcr > 1.05;
+    const isPcrBullish = optionChainData ? optionChainData.pcr > 1.05 : false;
 
     return [
       {
@@ -390,7 +467,9 @@ export default function App() {
         category: 'ORDER_FLOW',
         status: isPcrBullish ? 'BULLISH' : 'NEUTRAL',
         weight: 25,
-        detail: `Put-Call Ratio at ${optionChainData.pcr} with Max Pain at ₹${optionChainData.maxPain}`,
+        detail: optionChainData
+          ? `Put-Call Ratio at ${optionChainData.pcr} with Max Pain at ₹${optionChainData.maxPain}`
+          : 'Live Option Chain OI data awaiting broker feed',
         institutionalSignificance: 'Substantial Put writing below current price creates solid intraday support buffer',
       },
       {
@@ -544,6 +623,9 @@ export default function App() {
 
   // Reset Account Capital
   const handleResetAccount = () => {
+    try {
+      localStorage.removeItem('apex_upstox_trade_journal');
+    } catch {}
     setPositions([]);
     setOrders([]);
     setTradeHistory([]);
@@ -564,7 +646,8 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-[#070a0f] text-slate-100 overflow-hidden font-sans select-none">
+    <ErrorBoundary fallbackTitle="Institutional Trading Terminal">
+      <div className="flex h-screen w-screen flex-col bg-[#070a0f] text-slate-100 overflow-hidden font-sans select-none">
       {/* Top Header */}
       <Header
         selectedAsset={selectedAsset}
@@ -618,9 +701,15 @@ export default function App() {
               >
                 <Layers className="h-3.5 w-3.5" />
                 <span>OPTION CHAIN (OI & PCR)</span>
-                <span className="text-[10px] px-1 rounded bg-amber-500/20 text-amber-300 font-bold">
-                  PCR {optionChainData.pcr}
-                </span>
+                {optionChainData?.pcr ? (
+                  <span className="text-[10px] px-1 rounded bg-amber-500/20 text-amber-300 font-bold">
+                    PCR {optionChainData.pcr}
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-1 rounded bg-slate-800/80 text-slate-400 font-mono">
+                    OI PENDING
+                  </span>
+                )}
               </button>
 
               <button
@@ -654,7 +743,7 @@ export default function App() {
             <div className="hidden lg:flex items-center gap-2 font-mono text-[11px] text-slate-400">
               <span>{selectedAsset}</span>
               <span className="text-slate-600">|</span>
-              <span className="text-slate-100 font-bold">₹{currentPrice.toFixed(2)}</span>
+              <span className="text-slate-100 font-bold">₹{(currentPrice ?? 0).toFixed(2)}</span>
               <span className="text-slate-600">|</span>
               <span className="text-cyan-300">VIRGIN CPR DEFENDED</span>
             </div>
@@ -683,7 +772,14 @@ export default function App() {
               <OptionChainViewer
                 data={optionChainData}
                 symbol={selectedAsset}
+                selectedAsset={selectedAsset}
+                currentPrice={currentPrice}
+                unavailableReason={optionChainUnavailableReason}
                 onSelectStrike={(strike, type, ltp) => {
+                  setPrimedOption({ strike, type, ltp });
+                  soundFx.playSignalAlert();
+                }}
+                onSelectOptionTrade={(strike, type, ltp) => {
                   setPrimedOption({ strike, type, ltp });
                   soundFx.playSignalAlert();
                 }}
@@ -712,7 +808,7 @@ export default function App() {
                   soundFx.playSignalAlert();
                 }}
                 onSetupGenerated={(setup) => setActiveSetup(setup)}
-                pcr={optionChainData.pcr}
+                pcr={optionChainData?.pcr}
               />
             )}
           </div>
@@ -792,5 +888,6 @@ export default function App() {
         }}
       />
     </div>
+    </ErrorBoundary>
   );
 }

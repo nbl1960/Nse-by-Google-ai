@@ -287,10 +287,11 @@ export interface InstitutionalSetup {
 
 export interface ConfluenceFactor {
   id: string;
-  category: 'CPR_PIVOT' | 'SMC' | 'OPTION_OI' | 'FII_DII' | 'INDIA_VIX' | 'BREADTH';
+  category: 'CPR_PIVOT' | 'SMC' | 'OPTION_OI' | 'FII_DII' | 'INDIA_VIX' | 'BREADTH' | 'ORDER_FLOW' | 'INDICATORS';
   name: string;
   status: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
-  score: number; // 0 to 100
+  score?: number; // 0 to 100
+  weight?: number; // 0 to 100
   detail: string;
   institutionalSignificance: string;
 }
@@ -330,23 +331,32 @@ export interface MacroData {
   indiaVix: {
     value: number;
     change: number;
-    regime: string; // "Low Volatility (Option Writing Favored)" or "Active Trend Zone"
+    regime?: string; // "Low Volatility (Option Writing Favored)" or "Active Trend Zone"
+    trend?: string;
   };
-  fiiDiiFlow: {
+  fiiDiiFlow?: {
     fiiNet: number; // In ₹ Crores e.g. -1240.5
     diiNet: number; // In ₹ Crores e.g. +2180.2
     totalNet: number;
     bias: string;
   };
-  marketBreadth: {
+  fiiDii?: {
+    fiiNetCr: number;
+    diiNetCr: number;
+  };
+  usdInr?: {
+    value: number;
+    trend: string;
+  };
+  marketBreadth?: {
     advances: number;
     declines: number;
     unchanged: number;
     ratio: number;
   };
-  niftyPcr: number;
-  bankniftyPcr: number;
-  sectoralPerformance: {
+  niftyPcr?: number;
+  bankniftyPcr?: number;
+  sectoralPerformance?: {
     name: string;
     change: number;
     leadStock: string;
@@ -359,11 +369,11 @@ export interface UpstoxBrokerStatus {
   brokerName: string;
   clientName: string;
   userId: string;
-  tokenMasked: string;
+  tokenMasked?: string;
   hasToken: boolean;
-  balance: number; // in ₹ INR
-  utilizedMargin: number;
-  availableMargin: number;
+  balance?: number; // in ₹ INR
+  utilizedMargin?: number;
+  availableMargin?: number;
   tokenExpiry?: string;
   liveFeed?: string;
   marketOpen?: boolean;

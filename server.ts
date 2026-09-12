@@ -319,27 +319,64 @@ app.get("/api/market/quotes", async (_req, res) => {
 
         const mapping: Record<string, string> = {
           "NSE_INDEX:Nifty 50": "NIFTY 50",
+          "NSE_INDEX|Nifty 50": "NIFTY 50",
           "NSE_INDEX:Nifty Bank": "BANKNIFTY",
+          "NSE_INDEX|Nifty Bank": "BANKNIFTY",
           "BSE_INDEX:SENSEX": "SENSEX",
+          "BSE_INDEX|SENSEX": "SENSEX",
           "NSE_EQ:RELIANCE": "RELIANCE",
+          "NSE_EQ|INE002A01018": "RELIANCE",
           "NSE_EQ:HDFCBANK": "HDFCBANK",
+          "NSE_EQ|INE040A01034": "HDFCBANK",
           "NSE_EQ:TCS": "TCS",
+          "NSE_EQ|INE467B01029": "TCS",
           "NSE_EQ:INFY": "INFY",
+          "NSE_EQ|INE009A01021": "INFY",
           "NSE_EQ:ICICIBANK": "ICICIBANK",
+          "NSE_EQ|INE090A01021": "ICICIBANK",
           "NSE_EQ:TMPV": "TATAMOTORS",
           "NSE_EQ:TATAMOTORS": "TATAMOTORS",
+          "NSE_EQ|INE155A01022": "TATAMOTORS",
           "NSE_EQ:MARUTI": "MARUTI",
+          "NSE_EQ|INE585B01010": "MARUTI",
         };
 
         const liveQuotes: Record<string, any> = { ...defaultQuotes };
 
         for (const [key, quote] of Object.entries<any>(data)) {
-          const sym = mapping[key];
+          const sym = mapping[key] || mapping[quote?.instrument_token] || mapping[quote?.symbol];
           if (sym && quote) {
             const ltp = Number(quote.last_price) || defaultQuotes[sym].ltp;
             const close = Number(quote.ohlc?.close) || ltp;
             const netChange = Number(quote.net_change ?? (ltp - close));
             const changePercent = close > 0 ? Number(((netChange / close) * 100).toFixed(2)) : 0;
+
+            let depth: { bids: any[]; asks: any[]; spread?: number } | null = null;
+            if (quote.depth && (Array.isArray(quote.depth.buy) || Array.isArray(quote.depth.sell))) {
+              const bids = (quote.depth.buy || [])
+                .map((b: any) => ({
+                  price: Number(b.price) || 0,
+                  amount: Number(b.quantity) || 0,
+                  ordersCount: Number(b.orders) || 0,
+                }))
+                .filter((b: any) => b.price > 0);
+
+              const asks = (quote.depth.sell || [])
+                .map((s: any) => ({
+                  price: Number(s.price) || 0,
+                  amount: Number(s.quantity) || 0,
+                  ordersCount: Number(s.orders) || 0,
+                }))
+                .filter((s: any) => s.price > 0);
+
+              if (bids.length > 0 || asks.length > 0) {
+                const bestBid = bids[0]?.price || 0;
+                const bestAsk = asks[0]?.price || 0;
+                const spread = bestAsk > 0 && bestBid > 0 ? Number((bestAsk - bestBid).toFixed(2)) : 0.05;
+                depth = { bids, asks, spread };
+              }
+            }
+
             liveQuotes[sym] = {
               ltp,
               change: Number(netChange.toFixed(2)),
@@ -348,6 +385,7 @@ app.get("/api/market/quotes", async (_req, res) => {
               low: Number(quote.ohlc?.low) || ltp,
               open: Number(quote.ohlc?.open) || ltp,
               close,
+              depth,
             };
           }
         }
@@ -532,80 +570,127 @@ app.get("/api/market/klines", async (req, res) => {
   return res.json({ symbol, timeframe: tf, source: "NSE Institutional Feed", candles });
 });
 
-// Option Chain Endpoint for NIFTY, BANKNIFTY, SENSEX
-app.get("/api/market/option-chain", (req, res) => {
+// Option Chain Endpoint: Live Upstox F&O integration (No synthetic option data)
+app.get("/api/market/option-chain", async (req, res) => {
   const symbol = String(req.query.symbol || "NIFTY 50");
-  const basePriceMap: Record<string, number> = {
-    "NIFTY 50": 23398.10,
-    "BANKNIFTY": 56606.55,
-    "SENSEX": 74781.76,
-    "RELIANCE": 1257.50,
-    "MARUTI": 12400.00,
-  };
-  const underlyingPrice = basePriceMap[symbol] || 23398.10;
-  const step = symbol === "BANKNIFTY" || symbol === "SENSEX" || symbol === "MARUTI" ? 100 : symbol === "RELIANCE" ? 20 : 50;
-  const atmStrike = Math.round(underlyingPrice / step) * step;
 
-  const strikes: any[] = [];
-  let totalCeOi = 0;
-  let totalPeOi = 0;
-
-  for (let i = -6; i <= 6; i++) {
-    const strike = atmStrike + i * step;
-    const isAtm = strike === atmStrike;
-    const dist = (strike - underlyingPrice) / step;
-
-    const ceIntrinsic = Math.max(0, underlyingPrice - strike);
-    const peIntrinsic = Math.max(0, strike - underlyingPrice);
-    const timeValue = Math.max(15, (underlyingPrice * 0.0075) / (1 + Math.abs(dist) * 0.4));
-
-    const ceLtp = Number((ceIntrinsic + timeValue).toFixed(1));
-    const peLtp = Number((peIntrinsic + timeValue).toFixed(1));
-
-    const baseOi = (symbol === "BANKNIFTY" ? 15 : 25) * 2200;
-    const ceOiFactor = i > 0 ? 1 + Math.abs(i) * 0.45 : 1 / (1 + Math.abs(i) * 0.35);
-    const peOiFactor = i < 0 ? 1 + Math.abs(i) * 0.45 : 1 / (1 + Math.abs(i) * 0.35);
-
-    const ceOi = Math.round(baseOi * ceOiFactor * (0.85 + Math.random() * 0.3));
-    const peOi = Math.round(baseOi * peOiFactor * (0.85 + Math.random() * 0.3));
-    const ceOiChange = Math.round((Math.random() * 0.2 - 0.08) * ceOi);
-    const peOiChange = Math.round((Math.random() * 0.22 - 0.07) * peOi);
-
-    totalCeOi += ceOi;
-    totalPeOi += peOi;
-
-    strikes.push({
-      strike,
-      ceLtp,
-      ceChange: Number(((Math.random() - 0.48) * 8).toFixed(1)),
-      ceOi,
-      ceOiChange,
-      ceVolume: Math.round(ceOi * 0.6),
-      ceIv: Number((13.5 + Math.abs(dist) * 0.3).toFixed(1)),
-      peLtp,
-      peChange: Number(((Math.random() - 0.48) * 8).toFixed(1)),
-      peOi,
-      peOiChange,
-      peVolume: Math.round(peOi * 0.6),
-      peIv: Number((13.8 + Math.abs(dist) * 0.35).toFixed(1)),
-      isAtm,
+  if (!upstoxAccessToken) {
+    return res.json({
+      status: "UNAVAILABLE",
+      source: "NONE",
+      symbol,
+      message: "DATA UNAVAILABLE: Live Upstox Pro v2 token is required to stream real F&O option contracts and OI. Synthetic option data is prohibited.",
+      strikes: [],
     });
   }
 
-  const pcr = Number((totalPeOi / Math.max(1, totalCeOi)).toFixed(2));
-  const atmRow = strikes.find((s) => s.isAtm) || strikes[6];
+  // Attempt real Upstox option chain API v2
+  try {
+    const keyMap: Record<string, string> = {
+      "NIFTY 50": "NSE_INDEX|Nifty 50",
+      "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+      "SENSEX": "BSE_INDEX|SENSEX",
+      "RELIANCE": "NSE_EQ|INE002A01018",
+      "HDFCBANK": "NSE_EQ|INE040A01034",
+      "TCS": "NSE_EQ|INE467B01029",
+      "INFY": "NSE_EQ|INE009A01021",
+    };
 
-  res.json({
+    const instKey = keyMap[symbol] || "NSE_INDEX|Nifty 50";
+
+    const upstoxResp = await fetch(
+      `https://api.upstox.com/v2/option/chain?instrument_key=${encodeURIComponent(instKey)}`,
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${upstoxAccessToken}`,
+        },
+      }
+    );
+
+    if (upstoxResp.ok) {
+      const respJson = await upstoxResp.json();
+      const chainData = respJson.data;
+      if (Array.isArray(chainData) && chainData.length > 0) {
+        let totalCeOi = 0;
+        let totalPeOi = 0;
+        let underlyingPrice = 0;
+
+        const strikes = chainData.map((item: any) => {
+          const strike = Number(item.strike_price);
+          underlyingPrice = Number(item.underlying_spot_price || item.underlying_key_price || underlyingPrice);
+          const ce = item.call_options?.market_data || {};
+          const pe = item.put_options?.market_data || {};
+
+          const ceLtp = Number(ce.ltp || 0);
+          const peLtp = Number(pe.ltp || 0);
+          const ceOi = Number(ce.oi || 0);
+          const peOi = Number(pe.oi || 0);
+          const ceVol = Number(ce.volume || 0);
+          const peVol = Number(pe.volume || 0);
+
+          totalCeOi += ceOi;
+          totalPeOi += peOi;
+
+          return {
+            strike,
+            ceLtp,
+            ceChange: Number(ce.net_change || 0),
+            ceOi,
+            ceOiChange: Number(ce.oi_change || 0),
+            ceVolume: ceVol,
+            ceIv: Number(item.call_options?.option_greeks?.iv || 0),
+            peLtp,
+            peChange: Number(pe.net_change || 0),
+            peOi,
+            peOiChange: Number(pe.oi_change || 0),
+            peVolume: peVol,
+            peIv: Number(item.put_options?.option_greeks?.iv || 0),
+            isAtm: false,
+          };
+        });
+
+        const pcr = totalCeOi > 0 ? Number((totalPeOi / totalCeOi).toFixed(2)) : 1.0;
+        let minPainLoss = Infinity;
+        let maxPain = strikes[0]?.strike || 0;
+        for (const row of strikes) {
+          let totalPain = 0;
+          for (const test of strikes) {
+            if (test.strike < row.strike) totalPain += (row.strike - test.strike) * test.ceOi;
+            if (test.strike > row.strike) totalPain += (test.strike - row.strike) * test.peOi;
+          }
+          if (totalPain < minPainLoss) {
+            minPainLoss = totalPain;
+            maxPain = row.strike;
+          }
+        }
+
+        return res.json({
+          status: "SUCCESS",
+          source: "Upstox Live Pro API v2",
+          symbol,
+          underlyingPrice,
+          expiry: chainData[0]?.expiry || "Active Expiry",
+          pcr,
+          maxPain,
+          totalCeOi,
+          totalPeOi,
+          atmStraddle: 0,
+          sentiment: pcr > 1.2 ? "BULLISH" : pcr < 0.8 ? "BEARISH" : "NEUTRAL",
+          strikes,
+        });
+      }
+    }
+  } catch (err) {
+    console.error("Upstox option chain fetch error:", err);
+  }
+
+  return res.json({
+    status: "UNAVAILABLE",
+    source: "NONE",
     symbol,
-    underlyingPrice,
-    expiry: "Current Weekly Expiry",
-    pcr,
-    maxPain: atmStrike,
-    totalCeOi,
-    totalPeOi,
-    atmStraddle: Number((atmRow.ceLtp + atmRow.peLtp).toFixed(1)),
-    sentiment: pcr > 1.2 ? "BULLISH" : pcr < 0.8 ? "BEARISH" : "NEUTRAL",
-    strikes,
+    message: "DATA UNAVAILABLE: Live Upstox option chain returned no contracts for this symbol or market is closed.",
+    strikes: [],
   });
 });
 
@@ -613,6 +698,7 @@ app.get("/api/market/option-chain", (req, res) => {
 app.post("/api/upstox/order/place", async (req, res) => {
   const {
     symbol,
+    instrument_token,
     quantity,
     transaction_type, // 'BUY' | 'SELL'
     order_type, // 'MARKET' | 'LIMIT' | 'SL' | 'SL-M'
@@ -621,16 +707,20 @@ app.post("/api/upstox/order/place", async (req, res) => {
     trigger_price,
   } = req.body;
 
+  const targetToken = instrument_token || symbol || "NSE_INDEX|Nifty 50";
+  const isCommodity = String(targetToken).startsWith("MCX");
+  const upstoxProduct = product === "CNC" || product === "D" ? "D" : "I";
+
   // If live Upstox Access Token is available, route to Upstox API
   if (upstoxAccessToken) {
     try {
       const upstoxPayload = {
         quantity: Number(quantity) || 25,
-        product: product === "CNC" ? "D" : "I",
+        product: upstoxProduct,
         validity: "DAY",
         price: Number(price) || 0,
         tag: "UPX_INTRADAY",
-        instrument_token: symbol || "NSE_INDEX|Nifty 50",
+        instrument_token: targetToken,
         order_type: order_type || "MARKET",
         transaction_type: transaction_type || "BUY",
         disclosed_quantity: 0,
@@ -674,7 +764,7 @@ app.post("/api/upstox/order/place", async (req, res) => {
   return res.json({
     status: "SUCCESS",
     orderId: `UPX-SIM-${Date.now()}`,
-    message: `Order for ${quantity} units of ${symbol} filled at ${price || "MARKET"}.`,
+    message: `Order for ${quantity} units of ${symbol || targetToken} filled at ${price || "MARKET"}.`,
     mode: "SIMULATED",
   });
 });

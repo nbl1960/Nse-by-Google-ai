@@ -17,7 +17,7 @@ import { soundFx } from '../utils/audio';
 
 interface TradeSetupGeneratorProps {
   symbol: AssetSymbol;
-  currentPrice: number;
+  currentPrice?: number;
   timeframe: Timeframe;
   activeSetup: InstitutionalSetup | null;
   onApplySetupToOrderDesk: (setup: InstitutionalSetup) => void;
@@ -27,7 +27,7 @@ interface TradeSetupGeneratorProps {
 
 export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
   symbol,
-  currentPrice,
+  currentPrice: rawPrice,
   timeframe,
   activeSetup,
   onApplySetupToOrderDesk,
@@ -37,6 +37,9 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [modelUsed, setModelUsed] = useState<string | null>(null);
   const meta = INSTRUMENT_METAS[symbol] || INSTRUMENT_METAS['NIFTY 50'];
+  const currentPrice = typeof rawPrice === 'number' && !isNaN(rawPrice) && rawPrice > 0 
+    ? rawPrice 
+    : (meta?.basePrice || 24000);
 
   const handleGenerateTrade = async () => {
     setIsGenerating(true);
