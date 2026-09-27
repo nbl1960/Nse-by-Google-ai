@@ -193,6 +193,14 @@ export default function App() {
   // Active Institutional Setup
   const [activeSetup, setActiveSetup] = useState<InstitutionalSetup | null>(null);
 
+  // Stale-result guard: any previously generated setup is invalidated the
+  // moment the selected asset or timeframe changes, so it can never be
+  // shown on the chart overlay or loaded into the execution desk for a
+  // context it was not generated for. A fresh generation is required.
+  useEffect(() => {
+    setActiveSetup(null);
+  }, [selectedAsset, timeframe]);
+
   // Real-time macro/sector context (DXY, US10Y) fed into the decision engine
   const [macroContext, setMacroContext] = useState<DecisionEngineContext>({});
 

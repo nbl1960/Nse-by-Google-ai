@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { CONFLUENCE_THRESHOLD } from "./src/services/decisionEngine";
 
 dotenv.config();
 
@@ -284,8 +285,14 @@ app.get("/api/market/klines", async (req, res) => {
 });
 
 // Institutional Macro & Derivative Sentiment Data
+//
+// NOTE: these figures are currently static/illustrative placeholders, not a
+// live macro data feed. `dataSource` is exposed explicitly so consumers
+// (see decisionEngine.ts) never present this as live institutional truth.
 app.get("/api/market/macro", (_req, res) => {
   res.json({
+    dataSource: "static-illustrative",
+    isLive: false,
     dxy: {
       value: 101.45,
       change: -0.32,
@@ -320,31 +327,39 @@ app.get("/api/market/macro", (_req, res) => {
 // Critical signal rule: the client computes a validated confluence score from
 // live SMC/ICT structure, order flow, VWAP/EMA, liquidity, macro, options and
 // risk data (see src/services/decisionEngine.ts) and sends it as
-// `computedScore` / `computedSignal` / `computedSetup`. This endpoint treats
-// that number as the source of truth: Gemini may enrich the narrative, but
-// the final signal is always clamped against the >=90% threshold here, so a
-// BUY/SELL can never reach the client without a validated score behind it.
-const CONFLUENCE_THRESHOLD = 90;
-
+// `computedScore` / `computedSetup`. CONFLUENCE_THRESHOLD is imported from
+// that same module — a single authoritative constant, not a duplicated
+// literal — so the client and server can never drift out of sync on it.
 app.post("/api/institutional-analysis", async (req, res) => {
-  const { asset, currentPrice, timeframe, computedScore, computedSignal, computedSetup } = req.body;
+  const { asset, currentPrice, timeframe, computedScore, computedSetup } = req.body;
 
   const symbol = asset || "BTC/USD";
   const price = typeof currentPrice === "number" ? currentPrice : (symbol === "BTC/USD" ? 64850 : 2642.5);
 
-  const score = typeof computedScore === "number" ? computedScore : 0;
-  const direction = computedSignal === "BUY" || computedSignal === "STRONG_BUY"
+  const fallbackScore = typeof computedScore === "number" ? computedScore : 0;
+  const noTradeSetup = { signal: "NO_TRADE", confluenceScore: fallbackScore, setupName: "No Trade — Institutional Confluence Threshold Not Met" };
+
+  // Baseline is always the client's own computed setup — never a fabricated
+  // or hardcoded trade. Missing/malformed input safely defaults to NO_TRADE.
+  let baseline: any = computedSetup && typeof computedSetup === "object" ? { ...computedSetup } : noTradeSetup;
+
+  // Server-side safety gate, independent of anything the request CLAIMED:
+  // re-derive actionability strictly from the baseline object's OWN
+  // embedded confluenceScore/signal (never from a separate, spoofable field),
+  // and force NO_TRADE if they are inconsistent with the >=90% rule. This is
+  // what makes the gate hold even against a malformed/legacy caller.
+  const baselineScore = typeof baseline.confluenceScore === "number" ? baseline.confluenceScore : 0;
+  const baselineIsBuySell = baseline.signal === "BUY" || baseline.signal === "STRONG_BUY" || baseline.signal === "SELL" || baseline.signal === "STRONG_SELL";
+  if (baselineIsBuySell && baselineScore < CONFLUENCE_THRESHOLD) {
+    baseline = { ...baseline, signal: "NO_TRADE", setupName: "No Trade — Institutional Confluence Threshold Not Met" };
+  }
+
+  const direction = baseline.signal === "BUY" || baseline.signal === "STRONG_BUY"
     ? "BULLISH"
-    : computedSignal === "SELL" || computedSignal === "STRONG_SELL"
+    : baseline.signal === "SELL" || baseline.signal === "STRONG_SELL"
     ? "BEARISH"
     : "NEUTRAL";
-  const isActionable = score >= CONFLUENCE_THRESHOLD && direction !== "NEUTRAL";
-
-  // Baseline result is always the client's own validated computation, so the
-  // fallback below is never a fabricated invented signal.
-  const baseline = computedSetup && typeof computedSetup === "object"
-    ? computedSetup
-    : { signal: "NO_TRADE", confluenceScore: score, setupName: "No Trade — Institutional Confluence Threshold Not Met" };
+  const isActionable = baselineScore >= CONFLUENCE_THRESHOLD && direction !== "NEUTRAL";
 
   const ai = getAi();
   if (ai && isActionable) {
@@ -355,7 +370,7 @@ A deterministic decision engine has already computed and validated the following
 - Symbol: ${symbol}
 - Live Price: $${price}
 - Timeframe: ${timeframe || "5m"}
-- Validated Confluence Score: ${score}% (>= ${CONFLUENCE_THRESHOLD}% required to trade)
+- Validated Confluence Score: ${baselineScore}% (>= ${CONFLUENCE_THRESHOLD}% required to trade; this is a confluence score, NOT a win probability)
 - Direction: ${direction}
 - Computed Setup: ${JSON.stringify(baseline)}
 
@@ -364,8 +379,8 @@ Using the computed setup above as ground truth for signal/confluenceScore/entryP
 {
   "signal": "${baseline.signal}",
   "setupName": string,
-  "confluenceScore": ${score},
-  "winProbability": number,
+  "confluenceScore": ${baselineScore},
+  "heuristicConfidence": number,
   "riskRewardRatio": string,
   "entryPrice": number,
   "stopLoss": number,
@@ -374,7 +389,7 @@ Using the computed setup above as ground truth for signal/confluenceScore/entryP
   "takeProfit3": number,
   "recommendedSize": number,
   "riskAmountUsd": number,
-  "smcRationale": string (2-3 crisp sentences detailing OB, FVG, Liquidity sweep, and CVD justification),
+  "smcRationale": string (2-3 crisp sentences detailing OB, FVG, Liquidity sweep, and CVD justification; note TP1/TP2/TP3 are projected risk-multiples, not independently validated targets),
   "keyConfluences": string[] (up to 4 bullet points),
   "invalidationRule": string,
   "executionChecklist": string[] (3 actionable checks)
@@ -392,8 +407,8 @@ Using the computed setup above as ground truth for signal/confluenceScore/entryP
       if (response.text) {
         const parsed = JSON.parse(response.text);
         // Never trust the model's own score/signal — clamp to the validated computation.
-        parsed.confluenceScore = score;
-        parsed.signal = isActionable ? baseline.signal : "NO_TRADE";
+        parsed.confluenceScore = baselineScore;
+        parsed.signal = baseline.signal;
         parsed.entryPrice = baseline.entryPrice;
         parsed.stopLoss = baseline.stopLoss;
         parsed.takeProfit1 = baseline.takeProfit1;
@@ -404,15 +419,33 @@ Using the computed setup above as ground truth for signal/confluenceScore/entryP
           analysis: parsed,
         });
       }
+
+      // Gemini returned no usable text: an actual API failure, not merely an
+      // absent key. Per the critical signal rule, never fall back to showing
+      // a directional trade when the enrichment step we attempted broke —
+      // stand aside instead of guessing.
+      console.warn("Gemini institutional analysis returned no text; standing aside with NO_TRADE.");
+      return res.json({
+        source: "Institutional Decision Engine (Gemini Unavailable)",
+        analysis: { ...noTradeSetup, confluenceScore: baselineScore },
+      });
     } catch (err) {
-      console.warn("Gemini institutional analysis fallback:", err);
+      // Gemini/API failure (network error, malformed response, JSON parse
+      // failure, etc.): never substitute a hardcoded or carried-over trade —
+      // return NO_TRADE explicitly.
+      console.warn("Gemini institutional analysis failed; returning NO_TRADE:", err);
+      return res.json({
+        source: "Institutional Decision Engine (Gemini Failure)",
+        analysis: { ...noTradeSetup, confluenceScore: baselineScore },
+      });
     }
   }
 
-  // No Gemini key, Gemini failure, or confluence below threshold: return the
-  // client's own validated computation as-is. This is never a fabricated
-  // signal — it is NO_TRADE unless the deterministic engine already cleared
-  // the institutional threshold.
+  // No Gemini key configured (normal operating mode — the deterministic
+  // engine alone is authoritative), or the computed setup is not actionable:
+  // return the client's own validated computation as-is. This is never a
+  // fabricated signal — it is NO_TRADE unless the deterministic engine
+  // already cleared the institutional threshold with valid risk.
   return res.json({
     source: isActionable ? "Institutional Decision Engine" : "Institutional Decision Engine (Below Threshold)",
     analysis: baseline,

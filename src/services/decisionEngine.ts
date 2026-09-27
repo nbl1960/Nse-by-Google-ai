@@ -24,6 +24,11 @@ import {
  */
 export const CONFLUENCE_THRESHOLD = 90;
 
+/** Minimum real (structure-derived) risk-to-reward required before a trade can
+ * be actionable — matches the project's own previously-stated institutional
+ * minimum (1:2.5). Not a cosmetic number: see the risk-reward block below. */
+export const MIN_RISK_REWARD = 2.5;
+
 export type Direction = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 
 export interface DecisionEngineContext {
@@ -65,6 +70,25 @@ function computePutCallRatio(currentPrice: number, symbol: AssetSymbol): number 
   return totalCallOi > 0 ? Number((totalPutOi / totalCallOi).toFixed(2)) : 1.0;
 }
 
+/** Shared "cannot evaluate" result shape — used whenever required market
+ * context (candle history or a sane current price) is invalid, per the rule
+ * that invalid/unavailable market context must resolve to NO_TRADE, never a
+ * guessed or carried-over signal. */
+function insufficientContextResult(fallbackPrice: number, reason: string): ConfluenceEvaluation {
+  const factors: ConfluenceFactor[] = [];
+  addFactor(factors, 'SMC', 'Market Structure', 'NEUTRAL', 18, 'Insufficient Data', reason);
+  return {
+    score: 0,
+    direction: 'NEUTRAL',
+    bullishWeight: 0,
+    bearishWeight: 0,
+    riskRewardOk: false,
+    riskRewardRatio: 0,
+    factors,
+    levels: { entryPrice: fallbackPrice, stopLoss: fallbackPrice, takeProfit1: fallbackPrice, takeProfit2: fallbackPrice, takeProfit3: fallbackPrice },
+  };
+}
+
 function addFactor(
   factors: ConfluenceFactor[],
   category: ConfluenceFactor['category'],
@@ -88,25 +112,21 @@ export function evaluateConfluence(
   timeframe: Timeframe = '5m',
   context: DecisionEngineContext = {}
 ): ConfluenceEvaluation {
-  const factors: ConfluenceFactor[] = [];
-
   if (candles.length < 20) {
     // Not enough live data to validate anything institutional-grade.
     const p = candles[candles.length - 1]?.close || 0;
-    addFactor(factors, 'SMC', 'Market Structure', 'NEUTRAL', 18, 'Insufficient Data', 'Awaiting sufficient candle history to compute structure.');
-    return {
-      score: 0,
-      direction: 'NEUTRAL',
-      bullishWeight: 0,
-      bearishWeight: 0,
-      riskRewardOk: false,
-      riskRewardRatio: 0,
-      factors,
-      levels: { entryPrice: p, stopLoss: p, takeProfit1: p, takeProfit2: p, takeProfit3: p },
-    };
+    return insufficientContextResult(p, 'Awaiting sufficient candle history to compute structure.');
   }
 
   const currentPrice = candles[candles.length - 1].close;
+
+  // Required market context validity check: a non-finite or non-positive
+  // price means the feed is broken — never score against garbage data.
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return insufficientContextResult(0, 'Current price is invalid or unavailable — market context cannot be validated.');
+  }
+
+  const factors: ConfluenceFactor[] = [];
   const isGold = symbol === 'XAU/USD';
 
   const structure = calculateMarketStructure(candles);
@@ -223,7 +243,7 @@ export function evaluateConfluence(
       status,
       10,
       `${cvd.cumulativeDelta >= 0 ? '+' : ''}${cvd.cumulativeDelta} Delta (${cvd.divergenceAlert.replace('_', ' ')})`,
-      `Buy ratio ${(cvd.buyRatio * 100).toFixed(0)}% of recent tape.`
+      `Buy ratio ${(cvd.buyRatio * 100).toFixed(0)}% of recent tape. Proxy metric: estimated from candle wick/body geometry, not raw executed order-flow.`
     );
   }
 
@@ -243,7 +263,7 @@ export function evaluateConfluence(
       status,
       10,
       `DXY ${dxyChange >= 0 ? '+' : ''}${dxyChange.toFixed(2)}%${isGold ? `, US10Y ${us10yChange >= 0 ? '+' : ''}${us10yChange.toFixed(2)}%` : ''}`,
-      'Dollar Index and real yields inversely dictate BTC & Gold risk appetite.'
+      'Dollar Index and real yields inversely dictate BTC & Gold risk appetite. Static/illustrative: /api/market/macro currently serves fixed figures, not a live macro feed.'
     );
   }
 
@@ -260,7 +280,7 @@ export function evaluateConfluence(
       status,
       10,
       `PCR ${pcr.toFixed(2)}`,
-      'Call-heavy positioning skews bullish; put-heavy hedging skews bearish.'
+      'Call-heavy positioning skews bullish; put-heavy hedging skews bearish. Synthetic: PCR is a deterministic illustrative model, not live options-market open interest.'
     );
   }
 
@@ -273,8 +293,14 @@ export function evaluateConfluence(
 
   const score = Math.round(direction === 'NEUTRAL' ? Math.max(bullishWeight, bearishWeight) : (direction === 'BULLISH' ? bullishWeight : bearishWeight));
 
-  // Risk validation: derive entry/stop/targets from real structural levels and
-  // require a minimum 1:2.4 risk-to-reward before a trade can ever be valid.
+  // Risk validation: derive the stop AND the target from real structural
+  // levels (the analyzed range's opposite swing extreme), then compute the
+  // ACTUAL achievable risk-to-reward from those two real distances. This is
+  // a real gate, not a formality — riskRewardOk only becomes true when the
+  // measured ratio clears MIN_RISK_REWARD. TP1/TP2/TP3 remain risk-multiple
+  // projections for display/compatibility (see buildInstitutionalSetup),
+  // NOT independently structurally validated targets — only riskRewardRatio
+  // below reflects the real, structure-derived achievable ratio.
   const entryPrice = currentPrice;
   let stopLoss = entryPrice;
   let takeProfit1 = entryPrice;
@@ -285,25 +311,31 @@ export function evaluateConfluence(
 
   if (direction === 'BULLISH') {
     const protectiveLevel = Math.min(structure.swingLow, entryPrice * 0.997);
+    const targetLevel = structure.swingHigh; // real structural target: analyzed range high
     const riskDistance = entryPrice - protectiveLevel;
-    if (riskDistance > 0) {
+    const rewardDistance = targetLevel - entryPrice;
+    if (riskDistance > 0 && rewardDistance > 0) {
+      const achievableRR = rewardDistance / riskDistance;
       stopLoss = Number(protectiveLevel.toFixed(2));
       takeProfit1 = Number((entryPrice + riskDistance * 1.8).toFixed(2));
       takeProfit2 = Number((entryPrice + riskDistance * 3.0).toFixed(2));
       takeProfit3 = Number((entryPrice + riskDistance * 4.5).toFixed(2));
-      riskRewardRatio = 3.0;
-      riskRewardOk = true;
+      riskRewardRatio = Number(achievableRR.toFixed(2));
+      riskRewardOk = achievableRR >= MIN_RISK_REWARD;
     }
   } else if (direction === 'BEARISH') {
     const protectiveLevel = Math.max(structure.swingHigh, entryPrice * 1.003);
+    const targetLevel = structure.swingLow; // real structural target: analyzed range low
     const riskDistance = protectiveLevel - entryPrice;
-    if (riskDistance > 0) {
+    const rewardDistance = entryPrice - targetLevel;
+    if (riskDistance > 0 && rewardDistance > 0) {
+      const achievableRR = rewardDistance / riskDistance;
       stopLoss = Number(protectiveLevel.toFixed(2));
       takeProfit1 = Number((entryPrice - riskDistance * 1.8).toFixed(2));
       takeProfit2 = Number((entryPrice - riskDistance * 3.0).toFixed(2));
       takeProfit3 = Number((entryPrice - riskDistance * 4.5).toFixed(2));
-      riskRewardRatio = 3.0;
-      riskRewardOk = true;
+      riskRewardRatio = Number(achievableRR.toFixed(2));
+      riskRewardOk = achievableRR >= MIN_RISK_REWARD;
     }
   }
 
@@ -340,13 +372,26 @@ export function buildInstitutionalSetup(
   const timestamp = new Date().toLocaleTimeString();
 
   if (!isActionable) {
+    const scoreBelowThreshold = score < CONFLUENCE_THRESHOLD;
+    const reasons: string[] = [];
+    if (scoreBelowThreshold) reasons.push(`confluence is ${score}%, below the ${CONFLUENCE_THRESHOLD}% institutional threshold`);
+    if (direction === 'NEUTRAL') reasons.push('no clear directional bias');
+    if (!riskRewardOk) {
+      reasons.push(
+        evaluation.riskRewardRatio > 0
+          ? `achievable risk-to-reward is only 1:${evaluation.riskRewardRatio.toFixed(2)}, below the required 1:${MIN_RISK_REWARD} minimum`
+          : 'no valid structural target could be established for a risk-to-reward calculation'
+      );
+    }
+    const reasonText = reasons.join('; ');
+
     return {
       asset: symbol,
       signal: 'NO_TRADE',
       setupName: 'No Trade — Institutional Confluence Threshold Not Met',
       confluenceScore: score,
-      winProbability: 0,
-      riskRewardRatio: 'N/A',
+      heuristicConfidence: 0,
+      riskRewardRatio: evaluation.riskRewardRatio > 0 ? `1:${evaluation.riskRewardRatio.toFixed(2)}` : 'N/A',
       entryPrice: levels.entryPrice,
       stopLoss: levels.entryPrice,
       takeProfit1: levels.entryPrice,
@@ -354,10 +399,10 @@ export function buildInstitutionalSetup(
       takeProfit3: levels.entryPrice,
       recommendedSize: 0,
       riskAmountUsd: 0,
-      smcThesis: `Confluence at ${score}% (${direction}) is below the ${CONFLUENCE_THRESHOLD}% institutional threshold required to act.`,
-      smcRationale: `Confluence at ${score}% (${direction} bias) is below the ${CONFLUENCE_THRESHOLD}% institutional threshold${!riskRewardOk ? ', and structural risk levels are invalid' : ''}. Standing aside rather than forcing an entry.`,
+      smcThesis: `Standing aside: ${reasonText}.`,
+      smcRationale: `Standing aside rather than forcing an entry: ${reasonText}.`,
       keyConfluences: (direction === 'BULLISH' ? bullishFactorNames : direction === 'BEARISH' ? bearishFactorNames : [...bullishFactorNames, ...bearishFactorNames]).slice(0, 4),
-      invalidationRule: `No active trade — re-evaluate once confluence reaches ${CONFLUENCE_THRESHOLD}%.`,
+      invalidationRule: `No active trade — re-evaluate once confluence reaches ${CONFLUENCE_THRESHOLD}% with a valid ${MIN_RISK_REWARD}:1+ risk-to-reward.`,
       executionChecklist: [
         'Wait for additional confirming confluence',
         'Re-run the decision engine after the next structure shift',
@@ -379,8 +424,9 @@ export function buildInstitutionalSetup(
     signal,
     setupName: `${direction === 'BULLISH' ? 'Bullish' : 'Bearish'} ${symbol} Confluence Setup (${score}%)`,
     confluenceScore: score,
-    winProbability: Math.min(92, 55 + Math.round(score * 0.4)),
-    riskRewardRatio: `1:${evaluation.riskRewardRatio.toFixed(1)}`,
+    // Heuristic display value only — NOT a statistically derived win probability.
+    heuristicConfidence: Math.min(92, 55 + Math.round(score * 0.4)),
+    riskRewardRatio: `1:${evaluation.riskRewardRatio.toFixed(2)}`,
     entryPrice: levels.entryPrice,
     stopLoss: levels.stopLoss,
     takeProfit1: levels.takeProfit1,
@@ -388,8 +434,8 @@ export function buildInstitutionalSetup(
     takeProfit3: levels.takeProfit3,
     recommendedSize: isGold ? 1.0 : 0.4,
     riskAmountUsd: 1000,
-    smcThesis: `${rationaleFactors.join(', ')} align at ${score}% institutional confluence.`,
-    smcRationale: `${rationaleFactors.join(', ')} align to produce a validated ${score}% confluence score, clearing the ${CONFLUENCE_THRESHOLD}% institutional threshold for a ${direction.toLowerCase()} bias.`,
+    smcThesis: `${rationaleFactors.join(', ')} align at ${score}% institutional confluence (score, not a win probability).`,
+    smcRationale: `${rationaleFactors.join(', ')} align to produce a validated ${score}% confluence score, clearing the ${CONFLUENCE_THRESHOLD}% institutional threshold for a ${direction.toLowerCase()} bias with a real achievable risk-to-reward of 1:${evaluation.riskRewardRatio.toFixed(2)}. TP1/TP2/TP3 below are projected risk-multiples, not independently structurally validated targets.`,
     keyConfluences: rationaleFactors.slice(0, 4),
     invalidationRule: direction === 'BULLISH'
       ? `Close below $${levels.stopLoss.toFixed(2)} invalidates the bullish thesis.`
@@ -398,6 +444,7 @@ export function buildInstitutionalSetup(
       'Confirm structure shift with volume displacement before firing',
       'Verify spread is within normal range before executing',
       'Scale partial profit at TP1 and move stop to breakeven',
+      'TP1/TP2/TP3 are projected risk-multiples — treat as planning levels, not validated structural targets',
     ],
     timestamp,
   };

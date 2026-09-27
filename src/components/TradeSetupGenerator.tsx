@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AssetSymbol, Candle, InstitutionalSetup, Timeframe, INSTRUMENT_METAS } from '../types/trading';
 import {
   Sparkles,
@@ -50,6 +50,15 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [modelUsed, setModelUsed] = useState<string | null>(null);
   const [lastGenerated, setLastGenerated] = useState<InstitutionalSetup | null>(null);
+
+  // Stale-result guard: any previously generated setup (for a different
+  // asset or timeframe) is invalidated immediately on change — a fresh
+  // "Generate" is required before a setup for the new context can display
+  // or become loadable to the execution desk.
+  useEffect(() => {
+    setLastGenerated(null);
+    setModelUsed(null);
+  }, [symbol, timeframe]);
 
   const meta = INSTRUMENT_METAS[symbol] || INSTRUMENT_METAS['BTC/USD'];
   const currentPrice = typeof rawPrice === 'number' && !isNaN(rawPrice) && rawPrice > 0
@@ -212,10 +221,10 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
                     {setup.confluenceScore}/100
                   </div>
                 </div>
-                <div className="border-l border-slate-800 pl-2 text-right">
-                  <div className="text-[9px] text-slate-500 uppercase font-semibold">HISTORICAL PROB</div>
+                <div className="border-l border-slate-800 pl-2 text-right" title="Heuristic display value derived from the confluence score — not a statistically derived win probability.">
+                  <div className="text-[9px] text-slate-500 uppercase font-semibold">HEURISTIC CONF.</div>
                   <div className="text-xs font-extrabold text-emerald-400">
-                    {safeFixed(setup.winProbability, 1)}%
+                    {safeFixed(setup.heuristicConfidence, 1)}%
                   </div>
                 </div>
                 <div className="border-l border-slate-800 pl-2 text-right">
@@ -290,6 +299,11 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
                   </div>
                   <div className="text-[9px] text-cyan-500/80 mt-0.5">Runner 25% (1:5.2)</div>
                 </div>
+              </div>
+            )}
+            {!isNoTrade && (
+              <div className="text-[9px] text-slate-500 font-mono -mt-1">
+                TP1/TP2/TP3 are projected risk-multiples, not independently structurally validated targets. The R:R RATIO badge above reflects the real, structure-derived achievable ratio.
               </div>
             )}
 

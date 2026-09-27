@@ -349,8 +349,8 @@ export interface InstitutionalSetup {
   asset: AssetSymbol;
   signal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL' | 'NO_TRADE';
   setupName: string;
-  confluenceScore: number; // 0 - 100%
-  winProbability: number; // e.g. 84%
+  confluenceScore: number; // 0 - 100%, weighted confluence score — NOT a win probability
+  heuristicConfidence: number; // cosmetic display heuristic derived from confluenceScore; not a statistically derived win rate
   riskRewardRatio: string; // e.g. "1:3.8"
   entryPrice: number;
   stopLoss: number;
