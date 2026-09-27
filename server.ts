@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { CONFLUENCE_THRESHOLD } from "./src/services/decisionEngine";
 
 dotenv.config();
 
@@ -284,8 +285,14 @@ app.get("/api/market/klines", async (req, res) => {
 });
 
 // Institutional Macro & Derivative Sentiment Data
+//
+// NOTE: these figures are currently static/illustrative placeholders, not a
+// live macro data feed. `dataSource` is exposed explicitly so consumers
+// (see decisionEngine.ts) never present this as live institutional truth.
 app.get("/api/market/macro", (_req, res) => {
   res.json({
+    dataSource: "static-illustrative",
+    isLive: false,
     dxy: {
       value: 101.45,
       change: -0.32,
@@ -316,45 +323,74 @@ app.get("/api/market/macro", (_req, res) => {
 });
 
 // Institutional AI Analysis & Trade Setup Generator using Gemini API
+//
+// Critical signal rule: the client computes a validated confluence score from
+// live SMC/ICT structure, order flow, VWAP/EMA, liquidity, macro, options and
+// risk data (see src/services/decisionEngine.ts) and sends it as
+// `computedScore` / `computedSetup`. CONFLUENCE_THRESHOLD is imported from
+// that same module — a single authoritative constant, not a duplicated
+// literal — so the client and server can never drift out of sync on it.
 app.post("/api/institutional-analysis", async (req, res) => {
-  const { asset, currentPrice, timeframe, change24h, trend, rsi, vwapRelation, orderFlowDelta, smcStructure } = req.body;
+  const { asset, currentPrice, timeframe, computedScore, computedSetup } = req.body;
 
   const symbol = asset || "BTC/USD";
   const price = typeof currentPrice === "number" ? currentPrice : (symbol === "BTC/USD" ? 64850 : 2642.5);
 
+  const fallbackScore = typeof computedScore === "number" ? computedScore : 0;
+  const noTradeSetup = { signal: "NO_TRADE", confluenceScore: fallbackScore, setupName: "No Trade — Institutional Confluence Threshold Not Met" };
+
+  // Baseline is always the client's own computed setup — never a fabricated
+  // or hardcoded trade. Missing/malformed input safely defaults to NO_TRADE.
+  let baseline: any = computedSetup && typeof computedSetup === "object" ? { ...computedSetup } : noTradeSetup;
+
+  // Server-side safety gate, independent of anything the request CLAIMED:
+  // re-derive actionability strictly from the baseline object's OWN
+  // embedded confluenceScore/signal (never from a separate, spoofable field),
+  // and force NO_TRADE if they are inconsistent with the >=90% rule. This is
+  // what makes the gate hold even against a malformed/legacy caller.
+  const baselineScore = typeof baseline.confluenceScore === "number" ? baseline.confluenceScore : 0;
+  const baselineIsBuySell = baseline.signal === "BUY" || baseline.signal === "STRONG_BUY" || baseline.signal === "SELL" || baseline.signal === "STRONG_SELL";
+  if (baselineIsBuySell && baselineScore < CONFLUENCE_THRESHOLD) {
+    baseline = { ...baseline, signal: "NO_TRADE", setupName: "No Trade — Institutional Confluence Threshold Not Met" };
+  }
+
+  const direction = baseline.signal === "BUY" || baseline.signal === "STRONG_BUY"
+    ? "BULLISH"
+    : baseline.signal === "SELL" || baseline.signal === "STRONG_SELL"
+    ? "BEARISH"
+    : "NEUTRAL";
+  const isActionable = baselineScore >= CONFLUENCE_THRESHOLD && direction !== "NEUTRAL";
+
   const ai = getAi();
-  if (ai) {
+  if (ai && isActionable) {
     try {
       const prompt = `You are a Chief Institutional Risk & Algorithmic Execution Officer specializing in intraday Smart Money Concepts (SMC), Order Flow, and ICT killzones for ${symbol}.
-Current Market State:
+
+A deterministic decision engine has already computed and validated the following from live candle data — you do NOT invent or override these numbers:
 - Symbol: ${symbol}
 - Live Price: $${price}
 - Timeframe: ${timeframe || "5m"}
-- 24h Change: ${change24h || "+2.4%"}
-- Market Structure: ${trend || "Bullish displacement from London Low sweep"}
-- Intraday VWAP: ${vwapRelation || "Holding above VWAP +1.28 SD Band"}
-- Order Flow Delta: ${orderFlowDelta || "+480 Cumulative Volume Delta (Absorption)"}
-- SMC Structure: ${smcStructure || "15m Bullish Order Block bounce with unmitigated Fair Value Gap above"}
+- Validated Confluence Score: ${baselineScore}% (>= ${CONFLUENCE_THRESHOLD}% required to trade; this is a confluence score, NOT a win probability)
+- Direction: ${direction}
+- Computed Setup: ${JSON.stringify(baseline)}
 
 TASK:
-Synthesize an institutional-grade, mathematical intraday trade setup for ${symbol} that adheres strictly to institutional risk parameters (minimum 1:2.5 Risk-to-Reward ratio, exact stop loss beyond liquidity/invalidation, and 3 phased Take Profit targets).
-
-Respond strictly with valid JSON conforming to this schema:
+Using the computed setup above as ground truth for signal/confluenceScore/entryPrice/stopLoss/takeProfit1/takeProfit2/takeProfit3/riskRewardRatio/recommendedSize/riskAmountUsd, write a richer institutional narrative. Respond strictly with valid JSON conforming to this schema, copying the numeric/signal fields from the computed setup unchanged and only enriching the text fields:
 {
-  "signal": "STRONG_BUY" | "BUY" | "SELL" | "STRONG_SELL" | "NEUTRAL",
+  "signal": "${baseline.signal}",
   "setupName": string,
-  "confluenceScore": number (0 to 100),
-  "winProbability": number (60 to 92),
-  "riskRewardRatio": string (e.g. "1:3.6"),
+  "confluenceScore": ${baselineScore},
+  "heuristicConfidence": number,
+  "riskRewardRatio": string,
   "entryPrice": number,
   "stopLoss": number,
   "takeProfit1": number,
   "takeProfit2": number,
   "takeProfit3": number,
-  "recommendedSize": number (e.g. 0.5 for BTC or 1.5 for Gold lots),
-  "riskAmountUsd": number (e.g. 1000 for 1% risk on $100k balance),
-  "smcRationale": string (2-3 crisp sentences detailing OB, FVG, Liquidity sweep, and CVD justification),
-  "keyConfluences": string[] (4 bullet points),
+  "recommendedSize": number,
+  "riskAmountUsd": number,
+  "smcRationale": string (2-3 crisp sentences detailing OB, FVG, Liquidity sweep, and CVD justification; note TP1/TP2/TP3 are projected risk-multiples, not independently validated targets),
+  "keyConfluences": string[] (up to 4 bullet points),
   "invalidationRule": string,
   "executionChecklist": string[] (3 actionable checks)
 }`;
@@ -370,64 +406,49 @@ Respond strictly with valid JSON conforming to this schema:
 
       if (response.text) {
         const parsed = JSON.parse(response.text);
+        // Never trust the model's own score/signal — clamp to the validated computation.
+        parsed.confluenceScore = baselineScore;
+        parsed.signal = baseline.signal;
+        parsed.entryPrice = baseline.entryPrice;
+        parsed.stopLoss = baseline.stopLoss;
+        parsed.takeProfit1 = baseline.takeProfit1;
+        parsed.takeProfit2 = baseline.takeProfit2;
+        parsed.takeProfit3 = baseline.takeProfit3;
         return res.json({
           source: "Gemini 2.5 Flash Institutional Quant Engine",
           analysis: parsed,
         });
       }
+
+      // Gemini returned no usable text: an actual API failure, not merely an
+      // absent key. Per the critical signal rule, never fall back to showing
+      // a directional trade when the enrichment step we attempted broke —
+      // stand aside instead of guessing.
+      console.warn("Gemini institutional analysis returned no text; standing aside with NO_TRADE.");
+      return res.json({
+        source: "Institutional Decision Engine (Gemini Unavailable)",
+        analysis: { ...noTradeSetup, confluenceScore: baselineScore },
+      });
     } catch (err) {
-      console.warn("Gemini institutional analysis fallback:", err);
+      // Gemini/API failure (network error, malformed response, JSON parse
+      // failure, etc.): never substitute a hardcoded or carried-over trade —
+      // return NO_TRADE explicitly.
+      console.warn("Gemini institutional analysis failed; returning NO_TRADE:", err);
+      return res.json({
+        source: "Institutional Decision Engine (Gemini Failure)",
+        analysis: { ...noTradeSetup, confluenceScore: baselineScore },
+      });
     }
   }
 
-  // High precision deterministic institutional quant fallback
-  const isGold = symbol === "XAU/USD";
-  const slOffset = isGold ? 4.80 : 380;
-  const tp1Offset = slOffset * 1.8;
-  const tp2Offset = slOffset * 3.4;
-  const tp3Offset = slOffset * 5.2;
-
-  const entryPrice = price;
-  const stopLoss = Number((price - slOffset).toFixed(2));
-  const takeProfit1 = Number((price + tp1Offset).toFixed(2));
-  const takeProfit2 = Number((price + tp2Offset).toFixed(2));
-  const takeProfit3 = Number((price + tp3Offset).toFixed(2));
-
-  const fallbackSetup = {
-    signal: "STRONG_BUY",
-    setupName: isGold 
-      ? "London Session Liquidity Purge + 15m Bullish OB Mitigation" 
-      : "NY Open Killzone FVG Fill + CVD Bullish Absorption Sweep",
-    confluenceScore: 92,
-    winProbability: 84,
-    riskRewardRatio: "1:3.4",
-    entryPrice,
-    stopLoss,
-    takeProfit1,
-    takeProfit2,
-    takeProfit3,
-    recommendedSize: isGold ? 1.5 : 0.45,
-    riskAmountUsd: 1000,
-    smcRationale: isGold
-      ? `Price swept Sell-Side Liquidity (SSL) below Asian Range Low into institutional 15m Bullish Order Block ($${stopLoss}). DXY rejection at 101.60 and positive Cumulative Volume Delta confirm aggressive absorption.`
-      : `Displacement candle cleared Asian Highs and retraced into Optimal Trade Entry (0.705 Fib) Fair Value Gap ($${entryPrice}). Negative funding rate indicates imminent short squeeze potential toward $${takeProfit2}.`,
-    keyConfluences: [
-      "Sell-Side Liquidity (SSL) swept with immediate wick rejection",
-      "Consequent Encroachment (50% CE) holding inside Fair Value Gap",
-      "Cumulative Volume Delta (CVD) divergence showing institutional limit absorption",
-      "Inverse DXY Dollar Index failure at key resistance supply zone",
-    ],
-    invalidationRule: `Hourly close below $${stopLoss} invalidates displacement thesis. Shift to sideline.`,
-    executionChecklist: [
-      "Confirm 5m Market Structure Shift (MSS) with volume displacement",
-      "Verify spread under 3 pips / $0.50 before firing bracket order",
-      "Scale 40% position off at TP1 and advance stop to breakeven",
-    ],
-  };
-
+  // No Gemini key configured (normal operating mode — the deterministic
+  // engine alone is authoritative), or the computed setup is not actionable:
+  // return the client's own validated computation as-is. This is never a
+  // fabricated signal — it is NO_TRADE unless the deterministic engine
+  // already cleared the institutional threshold with valid risk.
   return res.json({
-    source: "Institutional Algorithmic Rule Engine",
-    analysis: fallbackSetup,
+    source: isActionable ? "Institutional Decision Engine" : "Institutional Decision Engine (Below Threshold)",
+    analysis: baseline,
   });
 });
 

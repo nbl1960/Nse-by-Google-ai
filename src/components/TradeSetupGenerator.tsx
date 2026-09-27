@@ -1,13 +1,13 @@
-import React, { useState } from 'react';
-import { AssetSymbol, InstitutionalSetup, Timeframe, INSTRUMENT_METAS } from '../types/trading';
-import { 
-  Sparkles, 
-  Target, 
-  ShieldAlert, 
-  ArrowUpRight, 
-  ArrowDownRight, 
-  CheckSquare, 
-  Percent, 
+import React, { useState, useEffect } from 'react';
+import { AssetSymbol, Candle, InstitutionalSetup, Timeframe, INSTRUMENT_METAS } from '../types/trading';
+import {
+  Sparkles,
+  Target,
+  ShieldAlert,
+  ArrowUpRight,
+  ArrowDownRight,
+  CheckSquare,
+  Percent,
   Send,
   RefreshCw,
   Cpu,
@@ -15,14 +15,18 @@ import {
   Zap,
   Activity,
   Flame,
-  Scale
+  Scale,
+  MinusCircle
 } from 'lucide-react';
 import { soundFx } from '../utils/audio';
+import { buildInstitutionalSetup, CONFLUENCE_THRESHOLD, DecisionEngineContext } from '../services/decisionEngine';
 
 interface TradeSetupGeneratorProps {
   symbol: AssetSymbol;
   currentPrice?: number;
   timeframe: Timeframe;
+  candles: Candle[];
+  macroContext?: DecisionEngineContext;
   activeSetup: InstitutionalSetup | null;
   onApplySetupToOrderDesk: (setup: InstitutionalSetup) => void;
   onSetupGenerated: (setup: InstitutionalSetup) => void;
@@ -37,20 +41,52 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
   symbol,
   currentPrice: rawPrice,
   timeframe,
+  candles,
+  macroContext,
   activeSetup,
   onApplySetupToOrderDesk,
   onSetupGenerated,
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [modelUsed, setModelUsed] = useState<string | null>(null);
+  const [lastGenerated, setLastGenerated] = useState<InstitutionalSetup | null>(null);
+
+  // Stale-result guard: any previously generated setup (for a different
+  // asset or timeframe) is invalidated immediately on change — a fresh
+  // "Generate" is required before a setup for the new context can display
+  // or become loadable to the execution desk.
+  useEffect(() => {
+    setLastGenerated(null);
+    setModelUsed(null);
+  }, [symbol, timeframe]);
 
   const meta = INSTRUMENT_METAS[symbol] || INSTRUMENT_METAS['BTC/USD'];
-  const currentPrice = typeof rawPrice === 'number' && !isNaN(rawPrice) && rawPrice > 0 
-    ? rawPrice 
+  const currentPrice = typeof rawPrice === 'number' && !isNaN(rawPrice) && rawPrice > 0
+    ? rawPrice
     : (meta?.basePrice || 64850);
+
+  // Enforces the critical signal rule: BUY/SELL only survive if confluence >= threshold.
+  // Anything else is clamped to NO_TRADE, regardless of what the AI response claims.
+  const enforceThreshold = (candidate: InstitutionalSetup): InstitutionalSetup => {
+    const score = typeof candidate.confluenceScore === 'number' ? candidate.confluenceScore : 0;
+    const isBuyOrSell = candidate.signal === 'BUY' || candidate.signal === 'STRONG_BUY' || candidate.signal === 'SELL' || candidate.signal === 'STRONG_SELL';
+    if (isBuyOrSell && score < CONFLUENCE_THRESHOLD) {
+      return {
+        ...candidate,
+        signal: 'NO_TRADE',
+        setupName: 'No Trade — Institutional Confluence Threshold Not Met',
+      };
+    }
+    return candidate;
+  };
 
   const handleGenerateTrade = async () => {
     setIsGenerating(true);
+
+    // Validated, deterministic setup computed from live SMC/ICT structure, order flow,
+    // VWAP/EMA, liquidity, macro context, options positioning, and risk.
+    const localSetup = buildInstitutionalSetup(candles, symbol, timeframe, macroContext);
+
     try {
       const response = await fetch('/api/institutional-analysis', {
         method: 'POST',
@@ -59,87 +95,42 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
           asset: symbol,
           currentPrice,
           timeframe,
-          change24h: symbol === 'BTC/USD' ? '+2.4%' : '+0.85%',
-          trend: symbol === 'BTC/USD' 
-            ? 'Bullish ICT Market Structure Shift (MSS) above Asian Range High' 
-            : 'Bullish London Low Sweep into 15m Institutional Order Block',
-          rsi: 59.4,
-          vwapRelation: 'Holding above Intraday VWAP +1.28 Standard Deviation Band',
-          orderFlowDelta: '+480 Cumulative Volume Delta (Institutional Limit Absorption)',
-          smcStructure: symbol === 'BTC/USD'
-            ? '15m Bullish Order Block mitigation with unmitigated Fair Value Gap above'
-            : 'Sell-Side Liquidity (SSL) swept below $2634 into HTF Demand Zone',
+          computedScore: localSetup.confluenceScore,
+          computedSignal: localSetup.signal,
+          computedSetup: localSetup,
         }),
       });
 
       const data = await response.json();
       if (data && data.analysis) {
-        const setup: InstitutionalSetup = {
+        const setup = enforceThreshold({
           ...data.analysis,
           asset: symbol,
           timestamp: new Date().toLocaleTimeString(),
-        };
+        });
         setModelUsed(data.source || 'Institutional Quant Engine');
-        onSetupGenerated(setup);
+        setLastGenerated(setup);
+        if (setup.signal !== 'NO_TRADE') onSetupGenerated(setup);
+        soundFx.playSignalAlert();
+      } else {
+        setModelUsed('Institutional Decision Engine');
+        setLastGenerated(localSetup);
+        if (localSetup.signal !== 'NO_TRADE') onSetupGenerated(localSetup);
         soundFx.playSignalAlert();
       }
     } catch {
-      // Fallback local institutional algorithmic setup
-      const isGold = symbol === 'XAU/USD';
-      const slOffset = isGold ? 4.80 : 380;
-      const tp1Offset = slOffset * 1.8;
-      const tp2Offset = slOffset * 3.4;
-      const tp3Offset = slOffset * 5.2;
-
-      const entryPrice = currentPrice;
-      const stopLoss = Number((currentPrice - slOffset).toFixed(2));
-      const takeProfit1 = Number((currentPrice + tp1Offset).toFixed(2));
-      const takeProfit2 = Number((currentPrice + tp2Offset).toFixed(2));
-      const takeProfit3 = Number((currentPrice + tp3Offset).toFixed(2));
-
-      const fallbackSetup: InstitutionalSetup = {
-        asset: symbol,
-        signal: 'STRONG_BUY',
-        setupName: isGold 
-          ? 'London Liquidity Sweep + 15m Bullish OB Mitigation' 
-          : 'NY Killzone FVG Fill + CVD Bullish Absorption',
-        confluenceScore: 92,
-        winProbability: 84,
-        riskRewardRatio: '1:3.4',
-        entryPrice,
-        stopLoss,
-        takeProfit1,
-        takeProfit2,
-        takeProfit3,
-        recommendedSize: isGold ? 1.5 : 0.45,
-        riskAmountUsd: 1000,
-        smcRationale: isGold
-          ? `Price swept Sell-Side Liquidity (SSL) below Asian Range Low into institutional 15m Bullish Order Block ($${stopLoss}). Inverse DXY weakness confirms aggressive absorption.`
-          : `Displacement candle cleared Asian Highs and retraced into Optimal Trade Entry (0.705 Fib) Fair Value Gap ($${entryPrice}). Negative funding rate indicates imminent short squeeze toward $${takeProfit2}.`,
-        keyConfluences: [
-          'Sell-Side Liquidity (SSL) swept with immediate wick rejection',
-          'Consequent Encroachment (50% CE) holding inside Fair Value Gap',
-          'Cumulative Volume Delta (CVD) divergence showing institutional limit absorption',
-          'Dollar Index (DXY) rejection at key resistance supply zone',
-        ],
-        invalidationRule: `Hourly close below $${stopLoss} invalidates displacement thesis. Shift to sideline.`,
-        executionChecklist: [
-          'Confirm 5m Market Structure Shift (MSS) with volume displacement',
-          'Verify spread under 3 pips / $0.50 before firing bracket order',
-          'Scale 40% position off at TP1 and advance stop to breakeven',
-        ],
-        timestamp: new Date().toLocaleTimeString(),
-      };
-
-      setModelUsed('Institutional Algorithmic Rule Engine');
-      onSetupGenerated(fallbackSetup);
+      // Network/server failure: fall back to the same local, validated computation.
+      setModelUsed('Institutional Decision Engine (Offline Fallback)');
+      setLastGenerated(localSetup);
+      if (localSetup.signal !== 'NO_TRADE') onSetupGenerated(localSetup);
       soundFx.playSignalAlert();
     } finally {
       setIsGenerating(false);
     }
   };
 
-  const setup = activeSetup;
+  const setup = lastGenerated ?? activeSetup;
+  const isNoTrade = setup?.signal === 'NO_TRADE';
 
   return (
     <div className="flex flex-col bg-[#0b0e14] border border-slate-800 rounded-lg overflow-hidden select-none">
@@ -189,17 +180,21 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
               <div className="flex items-center gap-2">
                 <span
                   className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-mono font-extrabold ${
-                    setup.signal.includes('BUY')
+                    isNoTrade
+                      ? 'bg-slate-700/30 text-slate-300 border border-slate-600/50'
+                      : setup.signal.includes('BUY')
                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm shadow-emerald-950'
                       : 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm shadow-rose-950'
                   }`}
                 >
-                  {setup.signal.includes('BUY') ? (
+                  {isNoTrade ? (
+                    <MinusCircle className="h-4 w-4 text-slate-400" />
+                  ) : setup.signal.includes('BUY') ? (
                     <ArrowUpRight className="h-4 w-4 text-emerald-400" />
                   ) : (
                     <ArrowDownRight className="h-4 w-4 text-rose-400" />
                   )}
-                  {setup.signal}
+                  {isNoTrade ? 'NO TRADE' : setup.signal}
                 </span>
 
                 <div>
@@ -226,10 +221,10 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
                     {setup.confluenceScore}/100
                   </div>
                 </div>
-                <div className="border-l border-slate-800 pl-2 text-right">
-                  <div className="text-[9px] text-slate-500 uppercase font-semibold">HISTORICAL PROB</div>
+                <div className="border-l border-slate-800 pl-2 text-right" title="Heuristic display value derived from the confluence score — not a statistically derived win probability.">
+                  <div className="text-[9px] text-slate-500 uppercase font-semibold">HEURISTIC CONF.</div>
                   <div className="text-xs font-extrabold text-emerald-400">
-                    {safeFixed(setup.winProbability, 1)}%
+                    {safeFixed(setup.heuristicConfidence, 1)}%
                   </div>
                 </div>
                 <div className="border-l border-slate-800 pl-2 text-right">
@@ -242,61 +237,75 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
             </div>
 
             {/* Price Target Execution Matrix */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-              <div className="p-2.5 rounded-lg bg-[#0e1420] border border-slate-800 font-mono">
-                <div className="text-[9px] text-slate-400 uppercase font-semibold">ENTRY LIMIT</div>
-                <div className="text-sm font-bold text-slate-100 mt-0.5">
-                  ${safeFixed(setup.entryPrice, symbol === 'BTC/USD' ? 1 : 2)}
-                </div>
-                <div className="text-[9px] text-slate-500 mt-0.5">Optimal Entry (OTE)</div>
+            {isNoTrade ? (
+              <div className="p-3 rounded-lg bg-[#0e1420] border border-slate-800 font-mono text-xs text-slate-400 flex items-center gap-2">
+                <MinusCircle className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+                <span>
+                  Confluence is {setup.confluenceScore}% — below the {CONFLUENCE_THRESHOLD}% institutional threshold required to publish an entry/stop/target grid. Standing aside.
+                </span>
               </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                <div className="p-2.5 rounded-lg bg-[#0e1420] border border-slate-800 font-mono">
+                  <div className="text-[9px] text-slate-400 uppercase font-semibold">ENTRY LIMIT</div>
+                  <div className="text-sm font-bold text-slate-100 mt-0.5">
+                    ${safeFixed(setup.entryPrice, symbol === 'BTC/USD' ? 1 : 2)}
+                  </div>
+                  <div className="text-[9px] text-slate-500 mt-0.5">Optimal Entry (OTE)</div>
+                </div>
 
-              <div className="p-2.5 rounded-lg bg-[#0e1420] border border-rose-950/60 font-mono">
-                <div className="text-[9px] text-rose-400 uppercase font-semibold flex items-center gap-1">
-                  <ShieldAlert className="h-2.5 w-2.5" />
-                  <span>STOP LOSS</span>
+                <div className="p-2.5 rounded-lg bg-[#0e1420] border border-rose-950/60 font-mono">
+                  <div className="text-[9px] text-rose-400 uppercase font-semibold flex items-center gap-1">
+                    <ShieldAlert className="h-2.5 w-2.5" />
+                    <span>STOP LOSS</span>
+                  </div>
+                  <div className="text-sm font-bold text-rose-300 mt-0.5">
+                    ${safeFixed(setup.stopLoss, symbol === 'BTC/USD' ? 1 : 2)}
+                  </div>
+                  <div className="text-[9px] text-rose-500/80 mt-0.5">
+                    Risk: ${safeFixed(Math.abs(setup.entryPrice - setup.stopLoss), 1)} pts
+                  </div>
                 </div>
-                <div className="text-sm font-bold text-rose-300 mt-0.5">
-                  ${safeFixed(setup.stopLoss, symbol === 'BTC/USD' ? 1 : 2)}
-                </div>
-                <div className="text-[9px] text-rose-500/80 mt-0.5">
-                  Risk: ${safeFixed(Math.abs(setup.entryPrice - setup.stopLoss), 1)} pts
-                </div>
-              </div>
 
-              <div className="p-2.5 rounded-lg bg-[#0e1420] border border-emerald-950/60 font-mono">
-                <div className="text-[9px] text-emerald-400 uppercase font-semibold flex items-center gap-1">
-                  <Target className="h-2.5 w-2.5" />
-                  <span>TAKE PROFIT 1</span>
+                <div className="p-2.5 rounded-lg bg-[#0e1420] border border-emerald-950/60 font-mono">
+                  <div className="text-[9px] text-emerald-400 uppercase font-semibold flex items-center gap-1">
+                    <Target className="h-2.5 w-2.5" />
+                    <span>TAKE PROFIT 1</span>
+                  </div>
+                  <div className="text-sm font-bold text-emerald-300 mt-0.5">
+                    ${safeFixed(setup.takeProfit1, symbol === 'BTC/USD' ? 1 : 2)}
+                  </div>
+                  <div className="text-[9px] text-emerald-500/80 mt-0.5">Scale 40% (1:1.8)</div>
                 </div>
-                <div className="text-sm font-bold text-emerald-300 mt-0.5">
-                  ${safeFixed(setup.takeProfit1, symbol === 'BTC/USD' ? 1 : 2)}
-                </div>
-                <div className="text-[9px] text-emerald-500/80 mt-0.5">Scale 40% (1:1.8)</div>
-              </div>
 
-              <div className="p-2.5 rounded-lg bg-[#0e1420] border border-emerald-950/60 font-mono">
-                <div className="text-[9px] text-emerald-400 uppercase font-semibold flex items-center gap-1">
-                  <Target className="h-2.5 w-2.5" />
-                  <span>TAKE PROFIT 2</span>
+                <div className="p-2.5 rounded-lg bg-[#0e1420] border border-emerald-950/60 font-mono">
+                  <div className="text-[9px] text-emerald-400 uppercase font-semibold flex items-center gap-1">
+                    <Target className="h-2.5 w-2.5" />
+                    <span>TAKE PROFIT 2</span>
+                  </div>
+                  <div className="text-sm font-bold text-emerald-300 mt-0.5">
+                    ${safeFixed(setup.takeProfit2, symbol === 'BTC/USD' ? 1 : 2)}
+                  </div>
+                  <div className="text-[9px] text-emerald-500/80 mt-0.5">Scale 35% (1:3.4)</div>
                 </div>
-                <div className="text-sm font-bold text-emerald-300 mt-0.5">
-                  ${safeFixed(setup.takeProfit2, symbol === 'BTC/USD' ? 1 : 2)}
-                </div>
-                <div className="text-[9px] text-emerald-500/80 mt-0.5">Scale 35% (1:3.4)</div>
-              </div>
 
-              <div className="p-2.5 rounded-lg bg-[#0e1420] border border-cyan-950/60 font-mono col-span-2 sm:col-span-1">
-                <div className="text-[9px] text-cyan-400 uppercase font-semibold flex items-center gap-1">
-                  <Target className="h-2.5 w-2.5" />
-                  <span>TP3 (RUNNER)</span>
+                <div className="p-2.5 rounded-lg bg-[#0e1420] border border-cyan-950/60 font-mono col-span-2 sm:col-span-1">
+                  <div className="text-[9px] text-cyan-400 uppercase font-semibold flex items-center gap-1">
+                    <Target className="h-2.5 w-2.5" />
+                    <span>TP3 (RUNNER)</span>
+                  </div>
+                  <div className="text-sm font-bold text-cyan-300 mt-0.5">
+                    ${safeFixed(setup.takeProfit3, symbol === 'BTC/USD' ? 1 : 2)}
+                  </div>
+                  <div className="text-[9px] text-cyan-500/80 mt-0.5">Runner 25% (1:5.2)</div>
                 </div>
-                <div className="text-sm font-bold text-cyan-300 mt-0.5">
-                  ${safeFixed(setup.takeProfit3, symbol === 'BTC/USD' ? 1 : 2)}
-                </div>
-                <div className="text-[9px] text-cyan-500/80 mt-0.5">Runner 25% (1:5.2)</div>
               </div>
-            </div>
+            )}
+            {!isNoTrade && (
+              <div className="text-[9px] text-slate-500 font-mono -mt-1">
+                TP1/TP2/TP3 are projected risk-multiples, not independently structurally validated targets. The R:R RATIO badge above reflects the real, structure-derived achievable ratio.
+              </div>
+            )}
 
             {/* SMC & Liquidity Rationale Box */}
             <div className="p-3 rounded-lg bg-[#090d14] border border-slate-800 text-xs space-y-2">
@@ -335,14 +344,20 @@ export const TradeSetupGenerator: React.FC<TradeSetupGeneratorProps> = ({
             <div className="flex items-center justify-end gap-2 pt-1">
               <button
                 id="apply-to-desk-btn"
+                disabled={isNoTrade}
                 onClick={() => {
+                  if (isNoTrade) return;
                   onApplySetupToOrderDesk(setup);
                   soundFx.playClick();
                 }}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 font-mono text-xs font-extrabold transition-all shadow-md shadow-emerald-500/20 cursor-pointer active:scale-95"
+                className={`flex items-center gap-1.5 rounded-lg px-4 py-2 font-mono text-xs font-extrabold transition-all shadow-md active:scale-95 ${
+                  isNoTrade
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed shadow-none'
+                    : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20 cursor-pointer'
+                }`}
               >
                 <Zap className="h-3.5 w-3.5" />
-                <span>LOAD BRACKET ORDER TO EXECUTION DESK</span>
+                <span>{isNoTrade ? 'NO VALID TRADE TO LOAD' : 'LOAD BRACKET ORDER TO EXECUTION DESK'}</span>
               </button>
             </div>
           </div>

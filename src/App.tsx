@@ -18,13 +18,14 @@ import {
   TapeTrade,
   KillzoneInfo
 } from './types/trading';
-import { 
-  generateSyntheticCandles, 
-  generateOrderBook, 
+import {
+  generateSyntheticCandles,
+  generateOrderBook,
   generateInitialTape,
   institutionalMarketService,
   SAMPLE_ECONOMIC_EVENTS
 } from './services/marketData';
+import { evaluateConfluence, DecisionEngineContext } from './services/decisionEngine';
 import { Header } from './components/Header';
 import { InstitutionalChart } from './components/InstitutionalChart';
 import { ConfluenceMatrix } from './components/ConfluenceMatrix';
@@ -191,6 +192,31 @@ export default function App() {
 
   // Active Institutional Setup
   const [activeSetup, setActiveSetup] = useState<InstitutionalSetup | null>(null);
+
+  // Stale-result guard: any previously generated setup is invalidated the
+  // moment the selected asset or timeframe changes, so it can never be
+  // shown on the chart overlay or loaded into the execution desk for a
+  // context it was not generated for. A fresh generation is required.
+  useEffect(() => {
+    setActiveSetup(null);
+  }, [selectedAsset, timeframe]);
+
+  // Real-time macro/sector context (DXY, US10Y) fed into the decision engine
+  const [macroContext, setMacroContext] = useState<DecisionEngineContext>({});
+
+  useEffect(() => {
+    fetch('/api/market/macro')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data) {
+          setMacroContext({
+            dxyChangePercent: data?.dxy?.change,
+            us10yChangePercent: data?.us10y?.change,
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // ICT Killzone State calculation
   const killzoneInfo: KillzoneInfo = useMemo(() => {
@@ -499,56 +525,13 @@ export default function App() {
     });
   }, []);
 
-  // Compute Confluence Factors for ConfluenceMatrix
-  const confluenceFactors: ConfluenceFactor[] = useMemo(() => {
-    const isGold = selectedAsset === 'XAU/USD';
-    return [
-      {
-        category: 'SMC',
-        name: 'Market Structure & Liquidity',
-        value: isGold ? 'Asian Low Swept + 15m Bullish OB Mitigation' : 'Bullish MSS above $64,200 Asian High',
-        status: 'BULLISH',
-        detail: isGold ? 'Sell-side liquidity grabbed into institutional order block at $2634' : 'Displacement created unmitigated Fair Value Gap',
-      },
-      {
-        category: 'SMC',
-        name: 'Premium / Discount & Fibs',
-        value: 'Optimal Trade Entry (0.705 OTE)',
-        status: 'BULLISH',
-        detail: 'Price deeply in discount zone relative to high-timeframe 4h range',
-      },
-      {
-        category: 'ORDER_FLOW',
-        name: 'Cumulative Volume Delta (CVD)',
-        value: '+480 Delta (Bullish Absorption)',
-        status: 'BULLISH',
-        detail: 'Aggressive institutional market buying absorbing passive limit offers',
-      },
-      {
-        category: 'ORDER_FLOW',
-        name: 'Volume Profile (Fixed Range)',
-        value: 'Holding Above Developing POC & VAL',
-        status: 'BULLISH',
-        detail: 'Point of Control migration upward confirms institutional value acceptance',
-      },
-      {
-        category: 'MACRO_INTERMARKET',
-        name: 'DXY Dollar Index Failure',
-        value: 'DXY 101.45 (-0.32% Rejection)',
-        status: 'BULLISH',
-        detail: 'Inverse Dollar drop provides strong tailwind for Gold & Bitcoin',
-      },
-      {
-        category: 'MACRO_INTERMARKET',
-        name: 'Derivatives Leverage & Liquidations',
-        value: isGold ? 'Real Yields Easing (-3 bps)' : 'Funding +0.0084% (Short Squeeze Fuel)',
-        status: 'BULLISH',
-        detail: isGold ? 'Yield pullbacks fuel physical bullion inflows' : '$18.6M short liquidation wall ready to trigger at highs',
-      },
-    ];
-  }, [selectedAsset]);
-
-  const confluenceScore = 92;
+  // Compute Confluence Factors for ConfluenceMatrix via the real decision engine
+  const confluenceEvaluation = useMemo(
+    () => evaluateConfluence(activeCandles, selectedAsset, timeframe, macroContext),
+    [activeCandles, selectedAsset, timeframe, macroContext]
+  );
+  const confluenceFactors: ConfluenceFactor[] = confluenceEvaluation.factors;
+  const confluenceScore = confluenceEvaluation.score;
 
   return (
     <ErrorBoundary>
@@ -609,7 +592,7 @@ export default function App() {
                 }`}
               >
                 <Activity className="h-3.5 w-3.5" />
-                <span>CONFLUENCE MATRIX (92%)</span>
+                <span>CONFLUENCE MATRIX ({confluenceScore}%)</span>
               </button>
 
               <button
@@ -692,9 +675,15 @@ export default function App() {
                   symbol={selectedAsset}
                   currentPrice={currentPrice}
                   timeframe={timeframe}
+                  candles={activeCandles}
+                  macroContext={macroContext}
                   activeSetup={activeSetup}
-                  onApplySetupToOrderDesk={(setup) => setActiveSetup(setup)}
-                  onSetupGenerated={(setup) => setActiveSetup(setup)}
+                  onApplySetupToOrderDesk={(setup) => {
+                    if (setup.signal !== 'NO_TRADE') setActiveSetup(setup);
+                  }}
+                  onSetupGenerated={(setup) => {
+                    if (setup.signal !== 'NO_TRADE') setActiveSetup(setup);
+                  }}
                 />
               )}
 
