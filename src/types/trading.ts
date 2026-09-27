@@ -347,7 +347,7 @@ export interface TradeHistoryItem {
 
 export interface InstitutionalSetup {
   asset: AssetSymbol;
-  signal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL';
+  signal: 'STRONG_BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG_SELL' | 'NO_TRADE';
   setupName: string;
   confluenceScore: number; // 0 - 100%
   winProbability: number; // e.g. 84%

@@ -316,45 +316,66 @@ app.get("/api/market/macro", (_req, res) => {
 });
 
 // Institutional AI Analysis & Trade Setup Generator using Gemini API
+//
+// Critical signal rule: the client computes a validated confluence score from
+// live SMC/ICT structure, order flow, VWAP/EMA, liquidity, macro, options and
+// risk data (see src/services/decisionEngine.ts) and sends it as
+// `computedScore` / `computedSignal` / `computedSetup`. This endpoint treats
+// that number as the source of truth: Gemini may enrich the narrative, but
+// the final signal is always clamped against the >=90% threshold here, so a
+// BUY/SELL can never reach the client without a validated score behind it.
+const CONFLUENCE_THRESHOLD = 90;
+
 app.post("/api/institutional-analysis", async (req, res) => {
-  const { asset, currentPrice, timeframe, change24h, trend, rsi, vwapRelation, orderFlowDelta, smcStructure } = req.body;
+  const { asset, currentPrice, timeframe, computedScore, computedSignal, computedSetup } = req.body;
 
   const symbol = asset || "BTC/USD";
   const price = typeof currentPrice === "number" ? currentPrice : (symbol === "BTC/USD" ? 64850 : 2642.5);
 
+  const score = typeof computedScore === "number" ? computedScore : 0;
+  const direction = computedSignal === "BUY" || computedSignal === "STRONG_BUY"
+    ? "BULLISH"
+    : computedSignal === "SELL" || computedSignal === "STRONG_SELL"
+    ? "BEARISH"
+    : "NEUTRAL";
+  const isActionable = score >= CONFLUENCE_THRESHOLD && direction !== "NEUTRAL";
+
+  // Baseline result is always the client's own validated computation, so the
+  // fallback below is never a fabricated invented signal.
+  const baseline = computedSetup && typeof computedSetup === "object"
+    ? computedSetup
+    : { signal: "NO_TRADE", confluenceScore: score, setupName: "No Trade — Institutional Confluence Threshold Not Met" };
+
   const ai = getAi();
-  if (ai) {
+  if (ai && isActionable) {
     try {
       const prompt = `You are a Chief Institutional Risk & Algorithmic Execution Officer specializing in intraday Smart Money Concepts (SMC), Order Flow, and ICT killzones for ${symbol}.
-Current Market State:
+
+A deterministic decision engine has already computed and validated the following from live candle data — you do NOT invent or override these numbers:
 - Symbol: ${symbol}
 - Live Price: $${price}
 - Timeframe: ${timeframe || "5m"}
-- 24h Change: ${change24h || "+2.4%"}
-- Market Structure: ${trend || "Bullish displacement from London Low sweep"}
-- Intraday VWAP: ${vwapRelation || "Holding above VWAP +1.28 SD Band"}
-- Order Flow Delta: ${orderFlowDelta || "+480 Cumulative Volume Delta (Absorption)"}
-- SMC Structure: ${smcStructure || "15m Bullish Order Block bounce with unmitigated Fair Value Gap above"}
+- Validated Confluence Score: ${score}% (>= ${CONFLUENCE_THRESHOLD}% required to trade)
+- Direction: ${direction}
+- Computed Setup: ${JSON.stringify(baseline)}
 
 TASK:
-Synthesize an institutional-grade, mathematical intraday trade setup for ${symbol} that adheres strictly to institutional risk parameters (minimum 1:2.5 Risk-to-Reward ratio, exact stop loss beyond liquidity/invalidation, and 3 phased Take Profit targets).
-
-Respond strictly with valid JSON conforming to this schema:
+Using the computed setup above as ground truth for signal/confluenceScore/entryPrice/stopLoss/takeProfit1/takeProfit2/takeProfit3/riskRewardRatio/recommendedSize/riskAmountUsd, write a richer institutional narrative. Respond strictly with valid JSON conforming to this schema, copying the numeric/signal fields from the computed setup unchanged and only enriching the text fields:
 {
-  "signal": "STRONG_BUY" | "BUY" | "SELL" | "STRONG_SELL" | "NEUTRAL",
+  "signal": "${baseline.signal}",
   "setupName": string,
-  "confluenceScore": number (0 to 100),
-  "winProbability": number (60 to 92),
-  "riskRewardRatio": string (e.g. "1:3.6"),
+  "confluenceScore": ${score},
+  "winProbability": number,
+  "riskRewardRatio": string,
   "entryPrice": number,
   "stopLoss": number,
   "takeProfit1": number,
   "takeProfit2": number,
   "takeProfit3": number,
-  "recommendedSize": number (e.g. 0.5 for BTC or 1.5 for Gold lots),
-  "riskAmountUsd": number (e.g. 1000 for 1% risk on $100k balance),
+  "recommendedSize": number,
+  "riskAmountUsd": number,
   "smcRationale": string (2-3 crisp sentences detailing OB, FVG, Liquidity sweep, and CVD justification),
-  "keyConfluences": string[] (4 bullet points),
+  "keyConfluences": string[] (up to 4 bullet points),
   "invalidationRule": string,
   "executionChecklist": string[] (3 actionable checks)
 }`;
@@ -370,6 +391,14 @@ Respond strictly with valid JSON conforming to this schema:
 
       if (response.text) {
         const parsed = JSON.parse(response.text);
+        // Never trust the model's own score/signal — clamp to the validated computation.
+        parsed.confluenceScore = score;
+        parsed.signal = isActionable ? baseline.signal : "NO_TRADE";
+        parsed.entryPrice = baseline.entryPrice;
+        parsed.stopLoss = baseline.stopLoss;
+        parsed.takeProfit1 = baseline.takeProfit1;
+        parsed.takeProfit2 = baseline.takeProfit2;
+        parsed.takeProfit3 = baseline.takeProfit3;
         return res.json({
           source: "Gemini 2.5 Flash Institutional Quant Engine",
           analysis: parsed,
@@ -380,54 +409,13 @@ Respond strictly with valid JSON conforming to this schema:
     }
   }
 
-  // High precision deterministic institutional quant fallback
-  const isGold = symbol === "XAU/USD";
-  const slOffset = isGold ? 4.80 : 380;
-  const tp1Offset = slOffset * 1.8;
-  const tp2Offset = slOffset * 3.4;
-  const tp3Offset = slOffset * 5.2;
-
-  const entryPrice = price;
-  const stopLoss = Number((price - slOffset).toFixed(2));
-  const takeProfit1 = Number((price + tp1Offset).toFixed(2));
-  const takeProfit2 = Number((price + tp2Offset).toFixed(2));
-  const takeProfit3 = Number((price + tp3Offset).toFixed(2));
-
-  const fallbackSetup = {
-    signal: "STRONG_BUY",
-    setupName: isGold 
-      ? "London Session Liquidity Purge + 15m Bullish OB Mitigation" 
-      : "NY Open Killzone FVG Fill + CVD Bullish Absorption Sweep",
-    confluenceScore: 92,
-    winProbability: 84,
-    riskRewardRatio: "1:3.4",
-    entryPrice,
-    stopLoss,
-    takeProfit1,
-    takeProfit2,
-    takeProfit3,
-    recommendedSize: isGold ? 1.5 : 0.45,
-    riskAmountUsd: 1000,
-    smcRationale: isGold
-      ? `Price swept Sell-Side Liquidity (SSL) below Asian Range Low into institutional 15m Bullish Order Block ($${stopLoss}). DXY rejection at 101.60 and positive Cumulative Volume Delta confirm aggressive absorption.`
-      : `Displacement candle cleared Asian Highs and retraced into Optimal Trade Entry (0.705 Fib) Fair Value Gap ($${entryPrice}). Negative funding rate indicates imminent short squeeze potential toward $${takeProfit2}.`,
-    keyConfluences: [
-      "Sell-Side Liquidity (SSL) swept with immediate wick rejection",
-      "Consequent Encroachment (50% CE) holding inside Fair Value Gap",
-      "Cumulative Volume Delta (CVD) divergence showing institutional limit absorption",
-      "Inverse DXY Dollar Index failure at key resistance supply zone",
-    ],
-    invalidationRule: `Hourly close below $${stopLoss} invalidates displacement thesis. Shift to sideline.`,
-    executionChecklist: [
-      "Confirm 5m Market Structure Shift (MSS) with volume displacement",
-      "Verify spread under 3 pips / $0.50 before firing bracket order",
-      "Scale 40% position off at TP1 and advance stop to breakeven",
-    ],
-  };
-
+  // No Gemini key, Gemini failure, or confluence below threshold: return the
+  // client's own validated computation as-is. This is never a fabricated
+  // signal — it is NO_TRADE unless the deterministic engine already cleared
+  // the institutional threshold.
   return res.json({
-    source: "Institutional Algorithmic Rule Engine",
-    analysis: fallbackSetup,
+    source: isActionable ? "Institutional Decision Engine" : "Institutional Decision Engine (Below Threshold)",
+    analysis: baseline,
   });
 });
 
